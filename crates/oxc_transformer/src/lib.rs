@@ -14,6 +14,7 @@ mod context;
 mod options;
 // Presets: <https://babel.dev/docs/presets>
 mod es2015;
+mod es2018;
 mod react;
 mod typescript;
 
@@ -24,6 +25,7 @@ mod helpers {
 use std::{path::Path, rc::Rc};
 
 use es2015::ES2015;
+use es2018::ES2018;
 use oxc_allocator::{Allocator, Vec};
 use oxc_ast::{
     ast::*,
@@ -35,8 +37,8 @@ use oxc_span::SourceType;
 use oxc_syntax::scope::ScopeFlags;
 
 pub use crate::{
-    compiler_assumptions::CompilerAssumptions, es2015::ES2015Options, options::TransformOptions,
-    react::ReactOptions, typescript::TypeScriptOptions,
+    compiler_assumptions::CompilerAssumptions, es2015::ES2015Options, es2018::ES2018Options,
+    options::TransformOptions, react::ReactOptions, typescript::TypeScriptOptions,
 };
 
 use crate::{
@@ -51,6 +53,7 @@ pub struct Transformer<'a> {
     x0_typescript: TypeScript<'a>,
     x1_react: React<'a>,
     x3_es2015: ES2015<'a>,
+    x3_es2018: ES2018<'a>,
 }
 
 impl<'a> Transformer<'a> {
@@ -75,6 +78,7 @@ impl<'a> Transformer<'a> {
             x0_typescript: TypeScript::new(options.typescript, &ctx),
             x1_react: React::new(options.react, &ctx),
             x3_es2015: ES2015::new(options.es2015, &ctx),
+            x3_es2018: ES2018::new(options.es2018, &ctx),
         }
     }
 
