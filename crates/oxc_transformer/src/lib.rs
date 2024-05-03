@@ -78,7 +78,7 @@ impl<'a> Transformer<'a> {
             x0_typescript: TypeScript::new(options.typescript, &ctx),
             x1_react: React::new(options.react, &ctx),
             x3_es2015: ES2015::new(options.es2015, &ctx),
-            x3_es2018: ES2018::new(options.es2018, &ctx),
+            x3_es2018: ES2018::new(options.es2018, options.assumptions, &ctx),
         }
     }
 
@@ -159,6 +159,7 @@ impl<'a> VisitMut<'a> for Transformer<'a> {
         self.x3_es2015.transform_expression(expr);
 
         walk_mut::walk_expression_mut(self, expr);
+        self.x3_es2018.transform_expression(expr);
 
         self.x3_es2015.transform_expression_on_exit(expr);
     }

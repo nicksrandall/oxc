@@ -1,16 +1,16 @@
 use std::rc::Rc;
 
+use oxc_ast::ast::*;
 use serde::Deserialize;
 
-use crate::context::Ctx;
+use crate::{context::Ctx, CompilerAssumptions};
 
-#[derive(Debug, Default, Clone, Deserialize)]
+use super::object_spread::{ObjectSpread, ObjectSpreadOptions};
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
 pub struct ObjectRestSpreadOptions {
-    /// When using object spread, assume that
-    /// spreaded properties don't trigger getters on the target object
-    /// and thus it's safe to assign them rather than defining them using `Object.defineProperty`.
     #[serde(rename = "loose")]
-    pub set_spread_properties: bool,
+    pub _loose: bool,
 
     #[serde(rename = "useBuiltIns")]
     pub _use_built_ins: bool,
@@ -28,11 +28,25 @@ pub struct ObjectRestSpreadOptions {
 /// * <https://github.com/babel/babel/tree/main/packages/babel-plugin-transform-object-rest-spread>
 pub struct ObjectRestSpread<'a> {
     ctx: Ctx<'a>,
-    _options: ObjectRestSpreadOptions,
+
+    object_spread: ObjectSpread<'a>,
 }
 
 impl<'a> ObjectRestSpread<'a> {
-    pub fn new(options: ObjectRestSpreadOptions, ctx: &Ctx<'a>) -> Self {
-        Self { ctx: Rc::clone(ctx), _options: options }
+    pub fn new(assumptions: CompilerAssumptions, ctx: &Ctx<'a>) -> Self {
+        Self {
+            ctx: Rc::clone(ctx),
+            object_spread: ObjectSpread::new(
+                ObjectSpreadOptions {
+                    set_spread_properties: assumptions.set_spread_properties,
+                    pure_getters: assumptions.pure_getters,
+                },
+                ctx,
+            ),
+        }
+    }
+
+    pub fn transform_expression(&mut self, expr: &mut Expression<'a>) {
+        self.object_spread.transform_expression(expr);
     }
 }

@@ -1,12 +1,14 @@
 mod object_rest_spread;
+mod object_spread;
 mod options;
 
 pub use object_rest_spread::{ObjectRestSpread, ObjectRestSpreadOptions};
 pub use options::ES2018Options;
 
+use oxc_ast::ast::*;
 use std::rc::Rc;
 
-use crate::context::Ctx;
+use crate::{context::Ctx, CompilerAssumptions};
 
 #[allow(dead_code)]
 pub struct ES2018<'a> {
@@ -18,14 +20,17 @@ pub struct ES2018<'a> {
 }
 
 impl<'a> ES2018<'a> {
-    pub fn new(options: ES2018Options, ctx: &Ctx<'a>) -> Self {
+    pub fn new(options: ES2018Options, assumptions: CompilerAssumptions, ctx: &Ctx<'a>) -> Self {
         Self {
-            object_rest_spread: ObjectRestSpread::new(
-                options.object_rest_spread.clone().unwrap_or_default(),
-                ctx,
-            ),
             ctx: Rc::clone(ctx),
             options,
+            object_rest_spread: ObjectRestSpread::new(assumptions, ctx),
+        }
+    }
+
+    pub fn transform_expression(&mut self, expr: &mut Expression<'a>) {
+        if self.options.object_rest_spread.is_some() {
+            self.object_rest_spread.transform_expression(expr);
         }
     }
 }
