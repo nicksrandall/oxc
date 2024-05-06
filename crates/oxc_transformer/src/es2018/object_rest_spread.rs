@@ -8,10 +8,10 @@ use super::object_spread::{ObjectSpread, ObjectSpreadOptions};
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 pub struct ObjectRestSpreadOptions {
     #[serde(rename = "loose")]
-    pub _loose: bool,
+    _loose: bool,
 
     #[serde(rename = "useBuiltIns")]
-    pub _use_built_ins: bool,
+    _use_built_ins: bool,
 }
 
 /// [plugin-transform-object-rest-spread](https://babeljs.io/docs/babel-plugin-transform-object-rest-spread)

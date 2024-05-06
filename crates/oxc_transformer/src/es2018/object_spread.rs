@@ -41,7 +41,7 @@ impl<'a> ObjectSpread<'a> {
         if self.options.set_spread_properties {
             self.get_static_member_expression("Object", "assign")
         } else {
-            if self.ctx.source_type.is_module()  {
+            if self.ctx.source_type.is_module() {
                 self.add_import_statement(
                     "default",
                     "_objectSpread",

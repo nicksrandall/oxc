@@ -79,7 +79,7 @@ fn transform_options(options: &BabelOptions) -> serde_json::Result<TransformOpti
         }
     }
 
-   let assumptions= serde_json::from_value(options.assumptions.clone()).unwrap_or_default();
+    let assumptions = serde_json::from_value(options.assumptions.clone()).unwrap_or_default();
 
     let react = if let Some(options) = options.get_preset("react") {
         get_options::<ReactOptions>(options)?
