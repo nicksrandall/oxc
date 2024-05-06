@@ -7,7 +7,6 @@ use super::ObjectRestSpreadOptions;
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ES2018Options {
-    #[serde(skip)]
     pub object_rest_spread: Option<ObjectRestSpreadOptions>,
 
     #[serde(skip)]
