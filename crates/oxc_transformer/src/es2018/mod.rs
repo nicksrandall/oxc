@@ -33,4 +33,8 @@ impl<'a> ES2018<'a> {
             self.object_rest_spread.transform_expression(expr);
         }
     }
+
+    pub fn transform_program_on_exit(&mut self, program: &mut Program<'a>) {
+        self.object_rest_spread.transform_program_on_exit(program);
+    }
 }

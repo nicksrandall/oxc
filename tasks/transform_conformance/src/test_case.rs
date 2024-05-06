@@ -79,6 +79,8 @@ fn transform_options(options: &BabelOptions) -> serde_json::Result<TransformOpti
         }
     }
 
+   let assumptions= serde_json::from_value(options.assumptions.clone()).unwrap_or_default();
+
     let react = if let Some(options) = options.get_preset("react") {
         get_options::<ReactOptions>(options)?
     } else {
@@ -108,11 +110,13 @@ fn transform_options(options: &BabelOptions) -> serde_json::Result<TransformOpti
             .get_plugin("transform-object-rest-spread")
             .map(get_options)
             .transpose()?,
+
+        assumptions,
     };
 
     Ok(TransformOptions {
         cwd: options.cwd.clone().unwrap(),
-        assumptions: serde_json::from_value(options.assumptions.clone()).unwrap_or_default(),
+        assumptions,
         typescript: options
             .get_plugin("transform-typescript")
             .map(get_options::<TypeScriptOptions>)

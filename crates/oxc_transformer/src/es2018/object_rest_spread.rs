@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use oxc_ast::ast::*;
 use serde::Deserialize;
 
@@ -27,15 +25,12 @@ pub struct ObjectRestSpreadOptions {
 /// * <https://babeljs.io/docs/babel-plugin-transform-object-rest-spread>
 /// * <https://github.com/babel/babel/tree/main/packages/babel-plugin-transform-object-rest-spread>
 pub struct ObjectRestSpread<'a> {
-    ctx: Ctx<'a>,
-
     object_spread: ObjectSpread<'a>,
 }
 
 impl<'a> ObjectRestSpread<'a> {
     pub fn new(assumptions: CompilerAssumptions, ctx: &Ctx<'a>) -> Self {
         Self {
-            ctx: Rc::clone(ctx),
             object_spread: ObjectSpread::new(
                 ObjectSpreadOptions {
                     set_spread_properties: assumptions.set_spread_properties,
@@ -48,5 +43,9 @@ impl<'a> ObjectRestSpread<'a> {
 
     pub fn transform_expression(&mut self, expr: &mut Expression<'a>) {
         self.object_spread.transform_expression(expr);
+    }
+
+    pub fn transform_program_on_exit(&mut self, program: &mut Program<'a>) {
+        self.object_spread.transform_program_on_exit(program);
     }
 }

@@ -104,6 +104,7 @@ impl<'a> VisitMut<'a> for Transformer<'a> {
 
         self.x1_react.transform_program_on_exit(program);
         self.x0_typescript.transform_program_on_exit(program);
+        self.x3_es2018.transform_program_on_exit(program);
     }
 
     // ALPHASORT

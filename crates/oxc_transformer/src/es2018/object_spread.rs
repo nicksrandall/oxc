@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
 use oxc_ast::{ast::*, AstBuilder};
-use oxc_span::SPAN;
+use oxc_span::{CompactStr, SPAN};
 use serde::Deserialize;
 
-use crate::context::Ctx;
+use crate::{context::Ctx, helpers::module_imports::NamedImport};
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 pub struct ObjectSpreadOptions {
@@ -37,10 +37,24 @@ impl<'a> ObjectSpread<'a> {
         self.ast().static_member_expression(SPAN, object, property, false)
     }
 
-    fn get_extend_object_callee(&self) -> Expression<'a> {
+    fn get_extend_object_callee(&mut self) -> Expression<'a> {
         if self.options.set_spread_properties {
             self.get_static_member_expression("Object", "assign")
         } else {
+            if self.ctx.semantic.source_type().is_module() {
+                self.add_import_statement(
+                    "default",
+                    "_objectSpread",
+                    "@babel/helpers/lib/helpers/objectSpread2.js".into(),
+                );
+            } else {
+                self.add_require_statement(
+                    "_objectSpread",
+                    "@babel/helpers/lib/helpers/objectSpread2.js".into(),
+                    true,
+                );
+            }
+
             let ident = IdentifierReference::new(SPAN, self.ast().new_atom("_objectSpread"));
             self.ast().identifier_reference_expression(ident)
         }
@@ -69,8 +83,7 @@ impl<'a> ObjectSpread<'a> {
             obj_prop_list.push(prop);
         }
 
-        let ObjectPropertyKind::SpreadProperty(mut spread_prop) =
-            obj_expr.properties.pop().unwrap()
+        let Some(ObjectPropertyKind::SpreadProperty(mut spread_prop)) = obj_expr.properties.pop()
         else {
             unreachable!();
         };
@@ -80,8 +93,9 @@ impl<'a> ObjectSpread<'a> {
         args.push(Argument::from(self.ast().move_expression(expr)));
         args.push(Argument::from(self.ast().move_expression(&mut spread_prop.argument)));
 
-        *expr =
-            self.ast().call_expression(SPAN, self.get_extend_object_callee(), args, false, None);
+        let callee = self.get_extend_object_callee();
+
+        *expr = self.ast().call_expression(SPAN, callee, args, false, None);
 
         if !obj_prop_list.is_empty() {
             obj_prop_list.reverse();
@@ -89,13 +103,29 @@ impl<'a> ObjectSpread<'a> {
             args.push(Argument::from(self.ast().move_expression(expr)));
             args.push(Argument::from(self.ast().object_expression(SPAN, obj_prop_list, None)));
 
-            *expr = self.ast().call_expression(
-                SPAN,
-                self.get_extend_object_callee(),
-                args,
-                false,
-                None,
-            );
+            let callee = self.get_extend_object_callee();
+
+            *expr = self.ast().call_expression(SPAN, callee, args, false, None);
         }
+    }
+
+    pub fn transform_program_on_exit(&mut self, program: &mut Program<'a>) {
+        let imports = self.ctx.module_imports.get_import_statements();
+        let index = program
+            .body
+            .iter()
+            .rposition(|stmt| matches!(stmt, Statement::ImportDeclaration(_)))
+            .map_or(0, |i| i + 1);
+        program.body.splice(index..index, imports);
+    }
+
+    fn add_import_statement(&mut self, imported: &str, local: &str, source: CompactStr) {
+        let import = NamedImport::new(imported.into(), Some(local.into()));
+        self.ctx.module_imports.add_import(source, import);
+    }
+
+    fn add_require_statement(&mut self, variable_name: &str, source: CompactStr, front: bool) {
+        let import = NamedImport::new(variable_name.into(), None);
+        self.ctx.module_imports.add_require(source, import, front);
     }
 }
