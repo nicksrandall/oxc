@@ -32,11 +32,14 @@ jobs:
       - name: Run
         id: run
         run: |
-          VERSION=`cargo release-oxc update --release crates`
+          OUTPUT=`cargo release-oxc update --release crates`
+          VERSION=`echo $OUTPUT | tail -n 1`
+          CHANGELOG=`echo $OUTPUT | head -n -1`
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "CHANGELOG=${CHANGELOG}" >> $GITHUB_OUTPUT
 
       # update `Cargo.lock`
-      - run: cargo ck
+      - run: cargo check
 
       - uses: peter-evans/create-pull-request@v6
         with:
@@ -47,6 +50,6 @@ jobs:
           branch: release/crates
           branch-suffix: timestamp
           title: Release crates v${{ steps.run.outputs.VERSION }}
-          body: Automated Release
+          body: Automated Release \n ${{ steps.run.outputs.CHANGELOG }}
           assignees: Boshen
           reviewers: Boshen
