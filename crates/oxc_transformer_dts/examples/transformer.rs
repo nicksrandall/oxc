@@ -1,4 +1,4 @@
-use std::{env, path::Path, rc::Rc};
+use std::{env, path::Path};
 
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -18,7 +18,6 @@ fn main() {
     let source_type = SourceType::from_path(path).unwrap();
 
     let ret = Parser::new(&allocator, &source_text, source_type).parse();
-    let trivias = Rc::new(ret.trivias);
 
     if !ret.errors.is_empty() {
         for error in ret.errors {
@@ -32,7 +31,7 @@ fn main() {
     println!("{source_text}\n");
 
     let program = ret.program;
-    match TransformerDts::new(&allocator, path, &source_text).build(&program) {
+    match TransformerDts::new(&allocator, path, &source_text, ret.trivias).build(&program) {
         Ok(dts) => {
             println!("Transformed dts:\n");
             println!("{dts}\n");

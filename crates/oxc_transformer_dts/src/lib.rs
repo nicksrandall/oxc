@@ -14,7 +14,9 @@ use std::{path::Path, rc::Rc};
 
 use context::{Ctx, TransformDtsCtx};
 use function::FunctionReturnType;
+use infer::{infer_type_from_expression, is_need_to_infer_type_from_expression};
 use oxc_allocator::{Allocator, Box};
+use oxc_ast::Trivias;
 #[allow(clippy::wildcard_imports)]
 use oxc_ast::{ast::*, Visit};
 use oxc_codegen::{Codegen, CodegenOptions, Context, Gen};
@@ -33,13 +35,13 @@ impl<'a> TransformerDts<'a> {
         allocator: &'a Allocator,
         source_path: &Path,
         source_text: &'a str,
-        // trivias: Rc<Trivias>,
+        trivias: Trivias,
     ) -> Self {
         let codegen = Codegen::new(
             &source_path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
             source_text,
+            trivias,
             CodegenOptions::default().with_typescript(true),
-            None,
         );
 
         let ctx = Rc::new(TransformDtsCtx::new(allocator));
@@ -124,53 +126,53 @@ impl<'a> TransformerDts<'a> {
         &self,
         decl: &VariableDeclarator<'a>,
     ) -> VariableDeclarator<'a> {
-        let mut id = None;
-        let init = if decl.id.type_annotation.is_none() {
-            if let Some(init) = &decl.init {
-                let type_annotation = match init {
-                    Expression::ObjectExpression(expr) => {
-                        Some(transform_object_expression_to_ts_type(&self.ctx, expr, true))
-                    }
-                    Expression::TSAsExpression(as_expr) => {
-                        if let Expression::ObjectExpression(expr) = &as_expr.expression {
-                            Some(transform_object_expression_to_ts_type(
-                                &self.ctx,
-                                expr,
-                                as_expr.type_annotation.is_const_type_reference(),
-                            ))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(type_annotation) = type_annotation {
-                    id = Some(self.ctx.ast.binding_pattern(
-                        self.ctx.ast.copy(&decl.id.kind),
-                        Some(self.ctx.ast.ts_type_annotation(SPAN, type_annotation)),
-                        decl.id.optional,
-                    ));
-                    None
+        let mut binding_type = None;
+        let mut init = None;
+        if decl.id.type_annotation.is_none() {
+            if let Some(init_expr) = &decl.init {
+                // if kind is const and it doesn't need to infer type from expression
+                if decl.kind.is_const() && !is_need_to_infer_type_from_expression(init_expr) {
+                    init = Some(self.ctx.ast.copy(init_expr));
                 } else {
-                    // TODO: check the init is a literal
-                    // Variable must have an explicit type annotation with --isolatedDeclarations.(9010)
-                    self.ctx.ast.copy(&decl.init)
+                    // otherwise, we need to infer type from expression
+                    binding_type = infer_type_from_expression(&self.ctx, init_expr).or_else(
+                        // if it's object expression, we need to transform it to ts type
+                        || match init_expr {
+                            Expression::ObjectExpression(expr) => {
+                                Some(transform_object_expression_to_ts_type(&self.ctx, expr, true))
+                            }
+                            Expression::TSAsExpression(as_expr) => {
+                                if let Expression::ObjectExpression(expr) = &as_expr.expression {
+                                    Some(transform_object_expression_to_ts_type(
+                                        &self.ctx,
+                                        expr,
+                                        as_expr.type_annotation.is_const_type_reference(),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        },
+                    );
                 }
             } else {
-                // TODO: report error for no type annotation
-                None
+                // has not type annotation and no init, we need to report error
+                binding_type = Some(self.ctx.ast.ts_unknown_keyword(SPAN));
             }
-        } else {
-            None
-        };
+        }
+        let id = binding_type.map_or_else(
+            || self.ctx.ast.copy(&decl.id),
+            |ts_type| {
+                self.ctx.ast.binding_pattern(
+                    self.ctx.ast.copy(&decl.id.kind),
+                    Some(self.ctx.ast.ts_type_annotation(SPAN, ts_type)),
+                    decl.id.optional,
+                )
+            },
+        );
 
-        self.ctx.ast.variable_declarator(
-            decl.span,
-            decl.kind,
-            id.unwrap_or_else(|| self.ctx.ast.copy(&decl.id)),
-            init,
-            decl.definite,
-        )
+        self.ctx.ast.variable_declarator(decl.span, decl.kind, id, init, decl.definite)
     }
 }
 
