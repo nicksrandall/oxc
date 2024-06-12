@@ -174,6 +174,23 @@ impl<'a> TransformerDts<'a> {
 
         self.ctx.ast.variable_declarator(decl.span, decl.kind, id, init, decl.definite)
     }
+
+    pub fn transform_using_declaration(
+        &self,
+        decl: &UsingDeclaration<'a>,
+    ) -> Box<'a, VariableDeclaration<'a>> {
+        let declarations = self.ctx.ast.new_vec_from_iter(
+            decl.declarations
+                .iter()
+                .map(|declarator| self.transform_variable_declarator(declarator)),
+        );
+        self.ctx.ast.variable_declaration(
+            decl.span,
+            VariableDeclarationKind::Const,
+            declarations,
+            self.modifiers_declare(),
+        )
+    }
 }
 
 impl<'a> Visit<'a> for TransformerDts<'a> {
@@ -194,11 +211,13 @@ impl<'a> Visit<'a> for TransformerDts<'a> {
         if let Some(decl) = &export_decl.declaration {
             let new_decl = match decl {
                 Declaration::FunctionDeclaration(func) => {
-                    let func = self.transform_function(func);
-                    Some(Declaration::FunctionDeclaration(func))
+                    Some(Declaration::FunctionDeclaration(self.transform_function(func)))
                 }
                 Declaration::VariableDeclaration(decl) => {
                     self.transform_variable_declaration(decl).map(Declaration::VariableDeclaration)
+                }
+                Declaration::UsingDeclaration(decl) => {
+                    Some(Declaration::VariableDeclaration(self.transform_using_declaration(decl)))
                 }
                 _ => None,
             };
@@ -222,6 +241,10 @@ impl<'a> Visit<'a> for TransformerDts<'a> {
 
     fn visit_export_default_declaration(&mut self, decl: &ExportDefaultDeclaration<'a>) {
         decl.gen(&mut self.codegen, Context::empty());
+    }
+
+    fn visit_using_declaration(&mut self, decl: &UsingDeclaration<'a>) {
+        self.transform_using_declaration(decl).gen(&mut self.codegen, Context::empty());
     }
 
     fn visit_ts_interface_declaration(&mut self, decl: &TSInterfaceDeclaration<'a>) {
