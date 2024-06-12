@@ -422,6 +422,9 @@ impl<'a, const MINIFY: bool> Gen<MINIFY> for TSSignature<'a> {
                         }
                     }
                 }
+                if let Some(type_parameters) = &signature.type_parameters {
+                    type_parameters.gen(p, ctx);
+                }
                 if signature.optional {
                     p.print_str(b"?");
                 }
