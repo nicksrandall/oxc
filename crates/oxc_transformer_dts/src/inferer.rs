@@ -45,7 +45,7 @@ impl<'a> TransformerDts<'a> {
             Expression::TSSatisfiesExpression(expr) => {
                 self.infer_type_from_expression(&expr.expression)
             }
-            Expression::TSInstantiationExpression(expr) => {
+            Expression::TSInstantiationExpression(_expr) => {
                 todo!();
                 // infer_type_from_expression(ctx, &expr.expression)
             }

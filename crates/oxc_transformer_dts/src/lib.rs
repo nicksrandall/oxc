@@ -7,7 +7,7 @@
 
 mod context;
 mod function;
-mod inference;
+mod inferer;
 mod transform;
 
 use std::{path::Path, rc::Rc};
