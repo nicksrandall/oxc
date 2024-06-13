@@ -7,16 +7,12 @@
 
 mod context;
 mod function;
-mod infer;
+mod inference;
 mod transform;
 
 use std::{path::Path, rc::Rc};
 
 use context::{Ctx, TransformDtsCtx};
-use infer::{
-    infer_function_return_type, infer_type_from_expression, infer_type_from_formal_parameter,
-    is_need_to_infer_type_from_expression,
-};
 use oxc_allocator::{Allocator, Box};
 use oxc_ast::Trivias;
 #[allow(clippy::wildcard_imports)]
@@ -76,7 +72,7 @@ impl<'a> TransformerDts<'a> {
         if func.modifiers.is_contains_declare() {
             self.ctx.ast.alloc(self.ctx.ast.copy(func))
         } else {
-            let return_type = infer_function_return_type(&self.ctx, func);
+            let return_type = self.infer_function_return_type(func);
             let params = self.transform_formal_parameters(&func.params);
             self.ctx.ast.function(
                 func.r#type,
@@ -124,11 +120,11 @@ impl<'a> TransformerDts<'a> {
         if decl.id.type_annotation.is_none() {
             if let Some(init_expr) = &decl.init {
                 // if kind is const and it doesn't need to infer type from expression
-                if decl.kind.is_const() && !is_need_to_infer_type_from_expression(init_expr) {
+                if decl.kind.is_const() && !Self::is_need_to_infer_type_from_expression(init_expr) {
                     init = Some(self.ctx.ast.copy(init_expr));
                 } else {
                     // otherwise, we need to infer type from expression
-                    binding_type = infer_type_from_expression(&self.ctx, init_expr);
+                    binding_type = self.infer_type_from_expression(init_expr);
                 }
             } else {
                 // has not type annotation and no init, we need to report error
@@ -228,7 +224,7 @@ impl<'a> TransformerDts<'a> {
                         }
                     }
 
-                    let type_annotation = infer_function_return_type(&self.ctx, function);
+                    let type_annotation = self.infer_function_return_type(function);
 
                     let value = self.ctx.ast.function(
                         FunctionType::TSEmptyBodyFunctionExpression,
@@ -271,7 +267,7 @@ impl<'a> TransformerDts<'a> {
                             let new_type = property
                                 .value
                                 .as_ref()
-                                .and_then(|expr| infer_type_from_expression(&self.ctx, expr))
+                                .and_then(|expr| self.infer_type_from_expression(expr))
                                 .unwrap_or_else(|| {
                                     // report error for has no type annotation
                                     self.ctx.ast.ts_unknown_keyword(property.span)
@@ -366,7 +362,8 @@ impl<'a> TransformerDts<'a> {
                 .map(|type_annotation| self.ctx.ast.copy(&type_annotation.type_annotation))
                 .or_else(|| {
                     // report error for has no type annotation
-                    let new_type = infer_type_from_formal_parameter(&self.ctx, param)
+                    let new_type = self
+                        .infer_type_from_formal_parameter(param)
                         .unwrap_or_else(|| self.ctx.ast.ts_unknown_keyword(param.span));
                     Some(new_type)
                 })

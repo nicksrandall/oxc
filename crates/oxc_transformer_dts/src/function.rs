@@ -1,7 +1,9 @@
+use std::rc::Rc;
+
 use oxc_ast::{
     ast::{
-        BindingIdentifier, Function, FunctionBody, ReturnStatement, TSType, TSTypeAliasDeclaration,
-        TSTypeName, TSTypeQueryExprName,
+        BindingIdentifier, Expression, Function, FunctionBody, ReturnStatement, TSType,
+        TSTypeAliasDeclaration, TSTypeName, TSTypeQueryExprName,
     },
     Visit,
 };
@@ -9,34 +11,72 @@ use oxc_diagnostics::OxcDiagnostic;
 use oxc_span::{Atom, GetSpan};
 use oxc_syntax::scope::ScopeFlags;
 
-use crate::{context::Ctx, infer::infer_type_from_expression};
+use crate::{context::Ctx, TransformerDts};
 
 /// Find return type from return statement. If has more than one return statement,
 pub struct FunctionReturnType<'a> {
     ctx: Ctx<'a>,
-    return_type: Option<TSType<'a>>,
+    return_expression: Option<Expression<'a>>,
     value_bindings: Vec<Atom<'a>>,
     type_bindings: Vec<Atom<'a>>,
-    has_multiple_return: bool,
+    return_statement_count: u8,
     scope_depth: u32,
 }
 
 impl<'a> FunctionReturnType<'a> {
-    pub fn find(ctx: Ctx<'a>, body: &FunctionBody<'a>) -> Option<TSType<'a>> {
+    pub fn infer(transformer: &TransformerDts<'a>, body: &FunctionBody<'a>) -> Option<TSType<'a>> {
         let mut visitor = FunctionReturnType {
-            ctx,
-            return_type: None,
-            has_multiple_return: false,
+            ctx: Rc::clone(&transformer.ctx),
+            return_expression: None,
+            return_statement_count: 0,
             scope_depth: 0,
             value_bindings: Vec::default(),
             type_bindings: Vec::default(),
         };
+
         visitor.visit_function_body(body);
-        if visitor.has_multiple_return {
-            None
-        } else {
-            visitor.return_type
+
+        if visitor.return_statement_count > 1 {
+            return None;
         }
+
+        visitor.return_expression.and_then(|expr| {
+            let expr_type = transformer.infer_type_from_expression(&expr)?;
+
+            if let Some((reference_name, is_value)) = match &expr_type {
+                TSType::TSTypeReference(type_reference) => {
+                    if let TSTypeName::IdentifierReference(ident) = &type_reference.type_name {
+                        Some((ident.name.clone(), false))
+                    } else {
+                        None
+                    }
+                }
+                TSType::TSTypeQuery(query) => {
+                    if let TSTypeQueryExprName::IdentifierReference(ident) = &query.expr_name {
+                        Some((ident.name.clone(), true))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            } {
+                let is_defined_in_current_scope = if is_value {
+                    visitor.value_bindings.contains(&reference_name)
+                } else {
+                    visitor.type_bindings.contains(&reference_name)
+                };
+
+                if is_defined_in_current_scope {
+                    transformer.ctx.error(
+                        OxcDiagnostic::error(format!("Type containing private name '{reference_name}' can't be used with --isolatedDeclarations.")).with_label(
+                            expr.span()
+                        )
+                    );
+                }
+            }
+
+            Some(expr_type)
+        })
     }
 }
 
@@ -61,50 +101,10 @@ impl<'a> Visit<'a> for FunctionReturnType<'a> {
         // We don't care about nested functions
     }
     fn visit_return_statement(&mut self, stmt: &ReturnStatement<'a>) {
-        if self.return_type.is_some() {
-            self.has_multiple_return = true;
-        }
-        if self.has_multiple_return {
+        self.return_statement_count += 1;
+        if self.return_statement_count > 1 {
             return;
         }
-        if let Some(expr) = &stmt.argument {
-            let Some(expr_type) = infer_type_from_expression(&self.ctx, expr) else {
-                return;
-            };
-
-            if let Some((reference_name, is_value)) = match &expr_type {
-                TSType::TSTypeReference(type_reference) => {
-                    if let TSTypeName::IdentifierReference(ident) = &type_reference.type_name {
-                        Some((ident.name.clone(), false))
-                    } else {
-                        None
-                    }
-                }
-                TSType::TSTypeQuery(query) => {
-                    if let TSTypeQueryExprName::IdentifierReference(ident) = &query.expr_name {
-                        Some((ident.name.clone(), true))
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            } {
-                let is_defined_in_current_scope = if is_value {
-                    self.value_bindings.contains(&reference_name)
-                } else {
-                    self.type_bindings.contains(&reference_name)
-                };
-
-                if is_defined_in_current_scope {
-                    self.ctx.error(
-                    OxcDiagnostic::error(format!("Type containing private name '{reference_name}' can't be used with --isolatedDeclarations.")).with_label(
-                        expr.span()
-                    )
-                );
-                }
-            }
-
-            self.return_type = Some(expr_type);
-        }
+        self.return_expression = self.ctx.ast.copy(&stmt.argument);
     }
 }
