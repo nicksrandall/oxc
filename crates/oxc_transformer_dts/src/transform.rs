@@ -96,12 +96,7 @@ pub fn transform_object_expression_to_ts_type<'a>(
     ctx.ast.ts_type_literal(SPAN, members)
 }
 
-pub fn transform_expression_to_ts_type<'a>(
-    ctx: &Ctx<'a>,
-    expr: &Expression<'a>,
-    // as const
-    is_const: bool,
-) -> TSType<'a> {
+pub fn transform_expression_to_ts_type<'a>(ctx: &Ctx<'a>, expr: &Expression<'a>) -> TSType<'a> {
     match expr {
         Expression::BooleanLiteral(lit) => {
             ctx.ast.ts_literal_type(SPAN, TSLiteral::BooleanLiteral(ctx.ast.copy(lit)))
@@ -128,7 +123,7 @@ pub fn transform_expression_to_ts_type<'a>(
         }
         Expression::ObjectExpression(expr) => {
             // { readonly a: number }
-            transform_object_expression_to_ts_type(ctx, expr, is_const)
+            transform_object_expression_to_ts_type(ctx, expr, true)
         }
         _ => {
             unreachable!()

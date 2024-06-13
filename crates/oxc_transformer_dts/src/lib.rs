@@ -88,6 +88,7 @@ impl<'a> TransformerDts<'a> {
                         .unwrap_or_else(|| unreachable!("declare function can not have body")),
                 )
             };
+            let params = self.transform_formal_parameters(&func.params);
             self.ctx.ast.function(
                 func.r#type,
                 func.span,
@@ -95,7 +96,7 @@ impl<'a> TransformerDts<'a> {
                 func.generator,
                 func.r#async,
                 self.ctx.ast.copy(&func.this_param),
-                self.ctx.ast.copy(&func.params),
+                params,
                 None,
                 self.ctx.ast.copy(&func.type_parameters),
                 return_type,

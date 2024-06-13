@@ -1,7 +1,7 @@
 use oxc_ast::ast::{BindingPatternKind, Expression, FormalParameter, TSType};
 use oxc_span::SPAN;
 
-use crate::context::Ctx;
+use crate::{context::Ctx, transform::transform_expression_to_ts_type};
 
 pub fn is_need_to_infer_type_from_expression(expr: &Expression) -> bool {
     !matches!(
@@ -27,7 +27,22 @@ pub fn infer_type_from_expression<'a>(ctx: &Ctx<'a>, expr: &Expression<'a>) -> O
             "undefined" => Some(ctx.ast.ts_undefined_keyword(SPAN)),
             _ => None,
         },
-        Expression::TSAsExpression(expr) => None,
+        Expression::TSAsExpression(expr) => {
+            if expr.type_annotation.is_const_type_reference() {
+                Some(transform_expression_to_ts_type(ctx, &expr.expression))
+            } else {
+                Some(ctx.ast.copy(&expr.type_annotation))
+            }
+        }
+        Expression::TSNonNullExpression(expr) => infer_type_from_expression(ctx, &expr.expression),
+        Expression::TSSatisfiesExpression(expr) => {
+            infer_type_from_expression(ctx, &expr.expression)
+        }
+        Expression::TSInstantiationExpression(expr) => {
+            todo!();
+            // infer_type_from_expression(ctx, &expr.expression)
+        }
+        Expression::TSTypeAssertion(expr) => Some(ctx.ast.copy(&expr.type_annotation)),
         _ => None,
     }
 }

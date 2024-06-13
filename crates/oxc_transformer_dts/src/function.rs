@@ -97,7 +97,7 @@ impl<'a> Visit<'a> for FunctionReturnType<'a> {
                     if expr.type_annotation.is_const_type_reference() {
                         // A 'const' assertions can only be applied to references to enum members, or string, number, boolean, array, or object literals.(1355)
                         let annotation =
-                            transform_expression_to_ts_type(&self.ctx, &expr.expression, true);
+                            transform_expression_to_ts_type(&self.ctx, &expr.expression);
 
                         self.ctx.ast.ts_type_annotation(SPAN, annotation);
                     } else {
