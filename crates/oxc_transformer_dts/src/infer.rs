@@ -1,7 +1,20 @@
-use oxc_ast::ast::{BindingPatternKind, Expression, FormalParameter, TSType};
+use std::rc::Rc;
+
+use oxc_allocator::Box;
+use oxc_ast::ast::{
+    ArrowFunctionExpression, BindingPatternKind, Expression, FormalParameter, Function, Statement,
+    TSType, TSTypeAnnotation,
+};
 use oxc_span::SPAN;
 
-use crate::{context::Ctx, transform::transform_expression_to_ts_type};
+use crate::{
+    context::Ctx,
+    function::FunctionReturnType,
+    transform::{
+        transform_arrow_function_to_ts_type, transform_expression_to_ts_type,
+        transform_function_to_ts_type, transform_object_expression_to_ts_type,
+    },
+};
 
 pub fn is_need_to_infer_type_from_expression(expr: &Expression) -> bool {
     !matches!(
@@ -27,6 +40,15 @@ pub fn infer_type_from_expression<'a>(ctx: &Ctx<'a>, expr: &Expression<'a>) -> O
             "undefined" => Some(ctx.ast.ts_undefined_keyword(SPAN)),
             _ => None,
         },
+        Expression::FunctionExpression(func) => {
+            transform_function_to_ts_type(ctx, func).map(|x| ctx.ast.copy(&x))
+        }
+        Expression::ArrowFunctionExpression(func) => {
+            transform_arrow_function_to_ts_type(ctx, func).map(|x| ctx.ast.copy(&x))
+        }
+        Expression::ObjectExpression(expr) => {
+            Some(transform_object_expression_to_ts_type(ctx, expr, false))
+        }
         Expression::TSAsExpression(expr) => {
             if expr.type_annotation.is_const_type_reference() {
                 Some(transform_expression_to_ts_type(ctx, &expr.expression))
@@ -63,4 +85,40 @@ pub fn infer_type_from_formal_parameter<'a>(
     } else {
         None
     }
+}
+
+pub fn infer_function_return_type<'a>(
+    ctx: &Ctx<'a>,
+    function: &Function<'a>,
+) -> Option<Box<'a, TSTypeAnnotation<'a>>> {
+    if function.return_type.is_some() {
+        return ctx.ast.copy(&function.return_type);
+    }
+
+    FunctionReturnType::find(
+        Rc::clone(ctx),
+        function
+            .body
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("declare function can not have body")),
+    )
+    .map(|type_annotation| ctx.ast.ts_type_annotation(SPAN, type_annotation))
+}
+
+pub fn infer_arrow_function_return_type<'a>(
+    ctx: &Ctx<'a>,
+    function: &ArrowFunctionExpression<'a>,
+) -> Option<Box<'a, TSTypeAnnotation<'a>>> {
+    if function.return_type.is_some() {
+        return ctx.ast.copy(&function.return_type);
+    }
+
+    if function.expression {
+        if let Some(Statement::ExpressionStatement(stmt)) = function.body.statements.first() {
+            return infer_type_from_expression(ctx, &stmt.expression)
+                .map(|type_annotation| ctx.ast.ts_type_annotation(SPAN, type_annotation));
+        }
+    }
+    FunctionReturnType::find(Rc::clone(ctx), &function.body)
+        .map(|type_annotation| ctx.ast.ts_type_annotation(SPAN, type_annotation))
 }

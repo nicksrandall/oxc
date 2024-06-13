@@ -13,9 +13,8 @@ mod transform;
 use std::{path::Path, rc::Rc};
 
 use context::{Ctx, TransformDtsCtx};
-use function::FunctionReturnType;
 use infer::{
-    infer_type_from_expression, infer_type_from_formal_parameter,
+    infer_function_return_type, infer_type_from_expression, infer_type_from_formal_parameter,
     is_need_to_infer_type_from_expression,
 };
 use oxc_allocator::{Allocator, Box};
@@ -26,7 +25,6 @@ use oxc_codegen::{Codegen, CodegenOptions, Context, Gen};
 use oxc_diagnostics::{Error, OxcDiagnostic};
 use oxc_span::SPAN;
 use oxc_syntax::scope::ScopeFlags;
-use transform::transform_object_expression_to_ts_type;
 
 pub struct TransformerDts<'a> {
     ctx: Ctx<'a>,
@@ -78,16 +76,7 @@ impl<'a> TransformerDts<'a> {
         if func.modifiers.is_contains_declare() {
             self.ctx.ast.alloc(self.ctx.ast.copy(func))
         } else {
-            let return_type = if let Some(return_type) = &func.return_type {
-                Some(self.ctx.ast.copy(return_type))
-            } else {
-                FunctionReturnType::find(
-                    Rc::clone(&self.ctx),
-                    func.body
-                        .as_ref()
-                        .unwrap_or_else(|| unreachable!("declare function can not have body")),
-                )
-            };
+            let return_type = infer_function_return_type(&self.ctx, func);
             let params = self.transform_formal_parameters(&func.params);
             self.ctx.ast.function(
                 func.r#type,
@@ -139,26 +128,7 @@ impl<'a> TransformerDts<'a> {
                     init = Some(self.ctx.ast.copy(init_expr));
                 } else {
                     // otherwise, we need to infer type from expression
-                    binding_type = infer_type_from_expression(&self.ctx, init_expr).or_else(
-                        // if it's object expression, we need to transform it to ts type
-                        || match init_expr {
-                            Expression::ObjectExpression(expr) => {
-                                Some(transform_object_expression_to_ts_type(&self.ctx, expr, true))
-                            }
-                            Expression::TSAsExpression(as_expr) => {
-                                if let Expression::ObjectExpression(expr) = &as_expr.expression {
-                                    Some(transform_object_expression_to_ts_type(
-                                        &self.ctx,
-                                        expr,
-                                        as_expr.type_annotation.is_const_type_reference(),
-                                    ))
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        },
-                    );
+                    binding_type = infer_type_from_expression(&self.ctx, init_expr);
                 }
             } else {
                 // has not type annotation and no init, we need to report error
@@ -258,6 +228,8 @@ impl<'a> TransformerDts<'a> {
                         }
                     }
 
+                    let type_annotation = infer_function_return_type(&self.ctx, function);
+
                     let value = self.ctx.ast.function(
                         FunctionType::TSEmptyBodyFunctionExpression,
                         function.span,
@@ -269,7 +241,7 @@ impl<'a> TransformerDts<'a> {
                         None,
                         self.ctx.ast.copy(&function.type_parameters),
                         // TODO: need to infer function type
-                        self.ctx.ast.copy(&function.return_type),
+                        type_annotation,
                         Modifiers::empty(),
                     );
                     let new_element = self.ctx.ast.class_method(

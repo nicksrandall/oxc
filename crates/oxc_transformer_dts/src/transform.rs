@@ -1,29 +1,44 @@
-use std::rc::Rc;
-
 use oxc_ast::ast::{
-    Expression, Function, ObjectExpression, ObjectPropertyKind, TSLiteral, TSMethodSignatureKind,
-    TSType,
+    ArrowFunctionExpression, Expression, Function, ObjectExpression, ObjectPropertyKind, TSLiteral,
+    TSMethodSignatureKind, TSType,
 };
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_span::SPAN;
 
-use crate::{context::Ctx, function::FunctionReturnType};
+use crate::{
+    context::Ctx,
+    infer::{infer_arrow_function_return_type, infer_function_return_type},
+};
 
-pub fn transform_function_to_ts_type<'a>(ctx: &Ctx<'a>, func: &Function<'a>) -> TSType<'a> {
-    let return_type = if let Some(return_type) = &func.return_type {
-        ctx.ast.copy(return_type)
-    } else {
-        FunctionReturnType::find(Rc::clone(ctx), func.body.as_ref().unwrap())
-            .unwrap_or_else(|| ctx.ast.ts_type_annotation(SPAN, ctx.ast.ts_unknown_keyword(SPAN)))
-    };
+pub fn transform_function_to_ts_type<'a>(ctx: &Ctx<'a>, func: &Function<'a>) -> Option<TSType<'a>> {
+    let return_type = infer_function_return_type(ctx, func);
 
-    ctx.ast.ts_function_type(
-        func.span,
-        ctx.ast.copy(&func.this_param),
-        ctx.ast.copy(&func.params),
-        return_type,
-        ctx.ast.copy(&func.type_parameters),
-    )
+    return_type.map(|return_type| {
+        ctx.ast.ts_function_type(
+            func.span,
+            ctx.ast.copy(&func.this_param),
+            ctx.ast.copy(&func.params),
+            return_type,
+            ctx.ast.copy(&func.type_parameters),
+        )
+    })
+}
+
+pub fn transform_arrow_function_to_ts_type<'a>(
+    ctx: &Ctx<'a>,
+    func: &ArrowFunctionExpression<'a>,
+) -> Option<TSType<'a>> {
+    let return_type = infer_arrow_function_return_type(ctx, func);
+
+    return_type.map(|return_type| {
+        ctx.ast.ts_function_type(
+            func.span,
+            None,
+            ctx.ast.copy(&func.params),
+            return_type,
+            ctx.ast.copy(&func.type_parameters),
+        )
+    })
 }
 
 /// Transform object expression to TypeScript type
@@ -44,45 +59,45 @@ pub fn transform_object_expression_to_ts_type<'a>(
     // as const
     is_const: bool,
 ) -> TSType<'a> {
-    let members =
-        ctx.ast.new_vec_from_iter(expr.properties.iter().filter_map(|property| match property {
+    let members = ctx.ast.new_vec_from_iter(expr.properties.iter().filter_map(|property|
+        match property {
             ObjectPropertyKind::ObjectProperty(object) => {
                 if object.computed {
                     ctx.error(
                         OxcDiagnostic::error("Computed property names on class or object literals cannot be inferred with --isolatedDeclarations.").with_label(object.span)
-                    );
-                    return None
+                        );
+                        return None
                 }
+                    if let Expression::FunctionExpression(function) = &object.value  {
+                        if !is_const && object.method {
+                            let return_type = infer_function_return_type(ctx, function);
+                            return Some(ctx.ast.ts_method_signature(
+                                object.span,
+                                ctx.ast.copy(&object.key),
+                                object.computed,
+                                false,
+                                TSMethodSignatureKind::Method,
+                                ctx.ast.copy(&function.this_param),
+                                ctx.ast.copy(&function.params),
+                                return_type,
+                                ctx.ast.copy(&function.type_parameters),
+                            ))
+                        }
 
-                if let Expression::FunctionExpression(function) = &object.value  {
-                    if !is_const && object.method {
-                        return Some(ctx.ast.ts_method_signature(
+                        let type_annotation = transform_function_to_ts_type(ctx, function);
+
+                        let property_signature = ctx.ast.ts_property_signature(
                             object.span,
-                            ctx.ast.copy(&object.key),
-                            object.computed,
                             false,
-                            TSMethodSignatureKind::Method,
-                            ctx.ast.copy(&function.this_param),
-                            ctx.ast.copy(&function.params),
-                            ctx.ast.copy(&function.return_type),
-                            ctx.ast.copy(&function.type_parameters),
-                        ))
-                    }
-
-                    let type_annotation = transform_function_to_ts_type(ctx, function);
-                    let property_signature = ctx.ast.ts_property_signature(
-                        object.span,
-                        false,
-                        false,
-                        is_const,
-                        ctx.ast.copy(&object.key),
-                        Some(ctx.ast.ts_type_annotation(SPAN, type_annotation)),
-                    );
-                    return Some(property_signature)
+                            false,
+                            is_const,
+                            ctx.ast.copy(&object.key),
+                            type_annotation.map(|type_annotation| {
+                                ctx.ast.ts_type_annotation(SPAN, type_annotation)
+                            }),
+                        );
+                        return Some(property_signature)
                 }
-
-
-
                 None
             },
             ObjectPropertyKind::SpreadProperty(spread) => {
@@ -96,6 +111,7 @@ pub fn transform_object_expression_to_ts_type<'a>(
     ctx.ast.ts_type_literal(SPAN, members)
 }
 
+// https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions
 pub fn transform_expression_to_ts_type<'a>(ctx: &Ctx<'a>, expr: &Expression<'a>) -> TSType<'a> {
     match expr {
         Expression::BooleanLiteral(lit) => {
