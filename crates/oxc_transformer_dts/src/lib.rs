@@ -362,6 +362,16 @@ impl<'a> TransformerDts<'a> {
 
         let body = self.ctx.ast.class_body(decl.body.span, elements);
 
+        let modifiers = if decl.modifiers.is_contains_abstract() {
+            let modifiers = self.ctx.ast.new_vec_from_iter([
+                Modifier { span: SPAN, kind: ModifierKind::Declare },
+                Modifier { span: SPAN, kind: ModifierKind::Abstract },
+            ]);
+            Modifiers::new(modifiers)
+        } else {
+            self.modifiers_declare()
+        };
+
         Some(self.ctx.ast.class(
             decl.r#type,
             decl.span,
@@ -372,7 +382,7 @@ impl<'a> TransformerDts<'a> {
             self.ctx.ast.copy(&decl.super_type_parameters),
             self.ctx.ast.copy(&decl.implements),
             self.ctx.ast.new_vec(),
-            self.modifiers_declare(),
+            modifiers,
         ))
     }
 

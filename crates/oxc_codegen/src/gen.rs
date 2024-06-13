@@ -2086,8 +2086,13 @@ impl<'a, const MINIFY: bool> Gen<MINIFY> for Class<'a> {
         if !p.options.enable_typescript && self.is_declare() {
             return;
         }
-        if p.options.enable_typescript && self.is_declare() {
-            p.print_str(b"declare ");
+        if p.options.enable_typescript {
+            if self.modifiers.is_contains_declare() {
+                p.print_str(b"declare ");
+            }
+            if self.modifiers.is_contains_abstract() {
+                p.print_str(b"abstract ");
+            }
         }
         let n = p.code_len();
         let wrap = self.is_expression() && (p.start_of_stmt == n || p.start_of_default_export == n);

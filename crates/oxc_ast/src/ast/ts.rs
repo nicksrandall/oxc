@@ -1305,6 +1305,10 @@ impl<'a> Modifiers<'a> {
         self.contains(ModifierKind::Declare)
     }
 
+    pub fn is_contains_abstract(&self) -> bool {
+        self.contains(ModifierKind::Abstract)
+    }
+
     pub fn remove_type_modifiers(&mut self) {
         if let Some(list) = &mut self.0 {
             list.retain(|m| !m.kind.is_typescript_syntax());
