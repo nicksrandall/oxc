@@ -46,7 +46,7 @@ impl<'a> TransformerDts<'a> {
                 self.infer_type_from_expression(&expr.expression)
             }
             Expression::TSInstantiationExpression(_expr) => {
-                todo!();
+                unreachable!();
                 // infer_type_from_expression(ctx, &expr.expression)
             }
             Expression::TSTypeAssertion(expr) => Some(self.ctx.ast.copy(&expr.type_annotation)),

@@ -126,9 +126,13 @@ impl<'a> TransformerDts<'a> {
                     // otherwise, we need to infer type from expression
                     binding_type = self.infer_type_from_expression(init_expr);
                 }
-            } else {
-                // has not type annotation and no init, we need to report error
+            } 
+            if binding_type.is_none() {
                 binding_type = Some(self.ctx.ast.ts_unknown_keyword(SPAN));
+                self.ctx.error(
+                    OxcDiagnostic::error("Variable must have an explicit type annotation with --isolatedDeclarations.")
+                        .with_label(decl.id.span()),
+                );
             }
         }
         let id = binding_type.map_or_else(
@@ -258,7 +262,6 @@ impl<'a> TransformerDts<'a> {
                         params,
                         None,
                         self.ctx.ast.copy(&function.type_parameters),
-                        // TODO: need to infer function type
                         type_annotation,
                         Modifiers::empty(),
                     );
