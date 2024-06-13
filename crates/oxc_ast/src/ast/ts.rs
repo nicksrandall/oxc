@@ -245,11 +245,32 @@ impl<'a> TSType<'a> {
     pub fn is_maybe_undefined(&self) -> bool {
         match self {
             TSType::TSUndefinedKeyword(_) => true,
-            TSType::TSUnionType(un) => {
-                un.types.iter().any(|t| matches!(t, TSType::TSUndefinedKeyword(_)))
-            }
+            TSType::TSUnionType(un) => un.types.iter().any(Self::is_maybe_undefined),
             _ => false,
         }
+    }
+
+    pub fn is_keyword(&self) -> bool {
+        matches!(
+            self,
+            TSType::TSAnyKeyword(_)
+                | TSType::TSBigIntKeyword(_)
+                | TSType::TSBooleanKeyword(_)
+                | TSType::TSNeverKeyword(_)
+                | TSType::TSNullKeyword(_)
+                | TSType::TSNumberKeyword(_)
+                | TSType::TSObjectKeyword(_)
+                | TSType::TSStringKeyword(_)
+                | TSType::TSSymbolKeyword(_)
+                | TSType::TSThisType(_)
+                | TSType::TSUndefinedKeyword(_)
+                | TSType::TSUnknownKeyword(_)
+                | TSType::TSVoidKeyword(_)
+        )
+    }
+
+    pub fn is_keyword_or_literal(&self) -> bool {
+        self.is_keyword() || matches!(self, TSType::TSLiteralType(_))
     }
 }
 

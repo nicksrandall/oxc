@@ -3,6 +3,7 @@ use oxc_ast::ast::{
     ArrowFunctionExpression, BindingPatternKind, Expression, FormalParameter, Function, Statement,
     TSType, TSTypeAnnotation,
 };
+use oxc_diagnostics::OxcDiagnostic;
 use oxc_span::SPAN;
 
 use crate::{function::FunctionReturnType, TransformerDts};
@@ -64,6 +65,12 @@ impl<'a> TransformerDts<'a> {
             if let Some(annotation) = pattern.left.type_annotation.as_ref() {
                 Some(self.ctx.ast.copy(&annotation.type_annotation))
             } else {
+                if let Expression::TSAsExpression(expr) = &pattern.right {
+                    if !expr.type_annotation.is_keyword_or_literal() {
+                        self.ctx.error(OxcDiagnostic::error("Parameter must have an explicit type annotation with --isolatedDeclarations."));
+                    }
+                }
+
                 self.infer_type_from_expression(&pattern.right)
             }
         } else {
@@ -80,7 +87,7 @@ impl<'a> TransformerDts<'a> {
         }
 
         FunctionReturnType::infer(
-            &self,
+            self,
             function
                 .body
                 .as_ref()
@@ -104,7 +111,7 @@ impl<'a> TransformerDts<'a> {
                     .map(|type_annotation| self.ctx.ast.ts_type_annotation(SPAN, type_annotation));
             }
         }
-        FunctionReturnType::infer(&self, &function.body)
+        FunctionReturnType::infer(self, &function.body)
             .map(|type_annotation| self.ctx.ast.ts_type_annotation(SPAN, type_annotation))
     }
 
