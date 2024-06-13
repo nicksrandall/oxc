@@ -7,7 +7,9 @@ use oxc_span::SPAN;
 
 use crate::{
     context::Ctx,
-    infer::{infer_arrow_function_return_type, infer_function_return_type},
+    infer::{
+        infer_arrow_function_return_type, infer_function_return_type, infer_type_from_expression,
+    },
 };
 
 pub fn transform_function_to_ts_type<'a>(ctx: &Ctx<'a>, func: &Function<'a>) -> Option<TSType<'a>> {
@@ -56,49 +58,48 @@ pub fn transform_arrow_function_to_ts_type<'a>(
 pub fn transform_object_expression_to_ts_type<'a>(
     ctx: &Ctx<'a>,
     expr: &ObjectExpression<'a>,
-    // as const
     is_const: bool,
 ) -> TSType<'a> {
-    let members = ctx.ast.new_vec_from_iter(expr.properties.iter().filter_map(|property|
-        match property {
+    let members =
+        ctx.ast.new_vec_from_iter(expr.properties.iter().filter_map(|property| match property {
             ObjectPropertyKind::ObjectProperty(object) => {
                 if object.computed {
                     ctx.error(
-                        OxcDiagnostic::error("Computed property names on class or object literals cannot be inferred with --isolatedDeclarations.").with_label(object.span)
-                        );
-                        return None
+                        OxcDiagnostic::error("Computed property names on class or object literals cannot be inferred with --isolatedDeclarations.")
+                            .with_label(object.span)
+                    );
+                    return None;
                 }
-                    if let Expression::FunctionExpression(function) = &object.value  {
-                        if !is_const && object.method {
-                            let return_type = infer_function_return_type(ctx, function);
-                            return Some(ctx.ast.ts_method_signature(
-                                object.span,
-                                ctx.ast.copy(&object.key),
-                                object.computed,
-                                false,
-                                TSMethodSignatureKind::Method,
-                                ctx.ast.copy(&function.this_param),
-                                ctx.ast.copy(&function.params),
-                                return_type,
-                                ctx.ast.copy(&function.type_parameters),
-                            ))
-                        }
 
-                        let type_annotation = transform_function_to_ts_type(ctx, function);
-
-                        let property_signature = ctx.ast.ts_property_signature(
+                if let Expression::FunctionExpression(function) = &object.value {
+                    if !is_const && object.method {
+                        let return_type = infer_function_return_type(ctx, function);
+                        return Some(ctx.ast.ts_method_signature(
                             object.span,
-                            false,
-                            false,
-                            is_const,
                             ctx.ast.copy(&object.key),
-                            type_annotation.map(|type_annotation| {
-                                ctx.ast.ts_type_annotation(SPAN, type_annotation)
-                            }),
-                        );
-                        return Some(property_signature)
+                            object.computed,
+                            false,
+                            TSMethodSignatureKind::Method,
+                            ctx.ast.copy(&function.this_param),
+                            ctx.ast.copy(&function.params),
+                            return_type,
+                            ctx.ast.copy(&function.type_parameters),
+                        ));
+                    }
                 }
-                None
+
+                let type_annotation = infer_type_from_expression(ctx, &object.value);
+
+                let property_signature = ctx.ast.ts_property_signature(
+                    object.span,
+                    false,
+                    false,
+                    is_const,
+                    ctx.ast.copy(&object.key),
+                    type_annotation
+                        .map(|type_annotation| ctx.ast.ts_type_annotation(SPAN, type_annotation)),
+                );
+                Some(property_signature)
             },
             ObjectPropertyKind::SpreadProperty(spread) => {
                 ctx.error(OxcDiagnostic::error(
@@ -107,7 +108,6 @@ pub fn transform_object_expression_to_ts_type<'a>(
                 None
             }
         }));
-
     ctx.ast.ts_type_literal(SPAN, members)
 }
 
