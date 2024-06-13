@@ -1,6 +1,7 @@
 use oxc_ast::ast::{
-    ArrowFunctionExpression, Expression, Function, ObjectExpression, ObjectPropertyKind, TSLiteral,
-    TSMethodSignatureKind, TSType,
+    ArrayExpression, ArrayExpressionElement, ArrowFunctionExpression, Expression, Function,
+    ObjectExpression, ObjectPropertyKind, TSLiteral, TSMethodSignatureKind, TSTupleElement, TSType,
+    TSTypeOperatorOperator,
 };
 use oxc_diagnostics::OxcDiagnostic;
 use oxc_span::SPAN;
@@ -110,6 +111,37 @@ impl<'a> TransformerDts<'a> {
         self.ctx.ast.ts_type_literal(SPAN, members)
     }
 
+    pub fn transform_array_expression_to_ts_type(
+        &self,
+        expr: &ArrayExpression<'a>,
+        is_const: bool,
+    ) -> TSType<'a> {
+        let element_types =
+            self.ctx.ast.new_vec_from_iter(expr.elements.iter().filter_map(|element| {
+                 match element {
+                    ArrayExpressionElement::SpreadElement(spread) => {
+                        self.ctx.error(OxcDiagnostic::error(
+                            "Arrays with spread elements can't inferred with --isolatedDeclarations.",
+                        ).with_label(spread.span));
+                        None
+                    },
+                    ArrayExpressionElement::Elision(elision) => {
+                        Some(TSTupleElement::from(self.ctx.ast.ts_undefined_keyword(elision.span)))
+                    },
+                    _ => {
+                         Some(TSTupleElement::from(self.transform_expression_to_ts_type(element.to_expression())))
+                    }
+                }
+            }));
+
+        let ts_type = self.ctx.ast.ts_tuple_type(SPAN, element_types);
+        if is_const {
+            self.ctx.ast.ts_type_operator_type(SPAN, TSTypeOperatorOperator::Readonly, ts_type)
+        } else {
+            ts_type
+        }
+    }
+
     // https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions
     pub fn transform_expression_to_ts_type(&self, expr: &Expression<'a>) -> TSType<'a> {
         match expr {
@@ -135,10 +167,8 @@ impl<'a> TransformerDts<'a> {
                 .ctx
                 .ast
                 .ts_literal_type(SPAN, TSLiteral::UnaryExpression(self.ctx.ast.copy(expr))),
-            Expression::ArrayExpression(_expr) => {
-                // readonly ["hello", "string", 1, 2, 3];
-                todo!();
-                // self.ctx.ast.ts_type_operator_type(SPAN, TSTypeOperatorOperator::Readonly, type_annotation)
+            Expression::ArrayExpression(expr) => {
+                self.transform_array_expression_to_ts_type(expr, true)
             }
             Expression::ObjectExpression(expr) => {
                 // { readonly a: number }
