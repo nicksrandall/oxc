@@ -19,7 +19,7 @@ use oxc_ast::Trivias;
 use oxc_ast::{ast::*, Visit};
 use oxc_codegen::{Codegen, CodegenOptions, Context, Gen};
 use oxc_diagnostics::{Error, OxcDiagnostic};
-use oxc_span::SPAN;
+use oxc_span::{GetSpan, SPAN};
 use oxc_syntax::scope::ScopeFlags;
 
 pub struct TransformerDts<'a> {
@@ -173,6 +173,25 @@ impl<'a> TransformerDts<'a> {
         }
     }
 
+    pub fn report_property_key(&self, key: &PropertyKey<'a>, computed: bool) -> bool {
+        if computed
+            && !matches!(
+                key,
+                PropertyKey::StringLiteral(_)
+                    | PropertyKey::NumericLiteral(_)
+                    | PropertyKey::BigintLiteral(_)
+            )
+        {
+            self.ctx.error(
+                OxcDiagnostic::error("Computed property names on class or object literals cannot be inferred with --isolatedDeclarations.")
+                .with_label(key.span())
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn transform_class_declaration(&self, decl: &Class<'a>) -> Option<Box<'a, Class<'a>>> {
         if decl.is_declare() {
             return None;
@@ -184,6 +203,9 @@ impl<'a> TransformerDts<'a> {
             match element {
                 ClassElement::StaticBlock(_) => {}
                 ClassElement::MethodDefinition(definition) => {
+                    if self.report_property_key(&definition.key, definition.computed) {
+                        return None;
+                    }
                     if definition.key.is_private_identifier() {
                         has_private_key = true;
                     }
@@ -256,6 +278,10 @@ impl<'a> TransformerDts<'a> {
                     elements.push(new_element);
                 }
                 ClassElement::PropertyDefinition(property) => {
+                    if self.report_property_key(&property.key, property.computed) {
+                        return None;
+                    }
+
                     if property.key.is_private_identifier() {
                         has_private_key = true;
                     }
@@ -294,6 +320,10 @@ impl<'a> TransformerDts<'a> {
                     elements.push(new_element);
                 }
                 ClassElement::AccessorProperty(property) => {
+                    if self.report_property_key(&property.key, property.computed) {
+                        return None;
+                    }
+
                     if property.key.is_private_identifier() {
                         has_private_key = true;
                     }
