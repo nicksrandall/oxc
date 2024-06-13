@@ -1,4 +1,4 @@
-use oxc_ast::ast::{Expression, TSType};
+use oxc_ast::ast::{BindingPatternKind, Expression, FormalParameter, TSType};
 use oxc_span::SPAN;
 
 use crate::context::Ctx;
@@ -29,5 +29,23 @@ pub fn infer_type_from_expression<'a>(ctx: &Ctx<'a>, expr: &Expression<'a>) -> O
         },
         Expression::TSAsExpression(expr) => None,
         _ => None,
+    }
+}
+
+pub fn infer_type_from_formal_parameter<'a>(
+    ctx: &Ctx<'a>,
+    param: &FormalParameter<'a>,
+) -> Option<TSType<'a>> {
+    if param.pattern.type_annotation.is_some() {
+        param.pattern.type_annotation.as_ref().map(|x| ctx.ast.copy(&x.type_annotation));
+    }
+    if let BindingPatternKind::AssignmentPattern(pattern) = &param.pattern.kind {
+        if let Some(annotation) = pattern.left.type_annotation.as_ref() {
+            Some(ctx.ast.copy(&annotation.type_annotation))
+        } else {
+            infer_type_from_expression(ctx, &pattern.right)
+        }
+    } else {
+        None
     }
 }

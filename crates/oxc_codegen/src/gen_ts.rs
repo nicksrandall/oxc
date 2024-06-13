@@ -701,3 +701,13 @@ impl<'a, const MINIFY: bool> GenExpr<MINIFY> for TSTypeAssertion<'a> {
         self.expression.gen_expr(p, precedence, ctx);
     }
 }
+
+impl<const MINIFY: bool> Gen<MINIFY> for TSAccessibility {
+    fn gen(&self, p: &mut Codegen<{ MINIFY }>, _ctx: Context) {
+        match self {
+            Self::Public => p.print_str(b"public "),
+            Self::Private => p.print_str(b"private "),
+            Self::Protected => p.print_str(b"protected "),
+        }
+    }
+}

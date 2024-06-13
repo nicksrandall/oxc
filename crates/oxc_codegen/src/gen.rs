@@ -720,8 +720,13 @@ impl<'a, const MINIFY: bool> Gen<MINIFY> for FunctionBody<'a> {
 impl<'a, const MINIFY: bool> Gen<MINIFY> for FormalParameter<'a> {
     fn gen(&self, p: &mut Codegen<{ MINIFY }>, ctx: Context) {
         self.decorators.gen(p, ctx);
-        if p.options.enable_typescript && self.readonly {
-            p.print_str(b"readonly ");
+        if p.options.enable_typescript {
+            if self.readonly {
+                p.print_str(b"readonly ");
+            }
+            if let Some(accessibility) = self.accessibility {
+                accessibility.gen(p, ctx);
+            }
         }
         self.pattern.gen(p, ctx);
     }

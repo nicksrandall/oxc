@@ -14,13 +14,16 @@ use std::{path::Path, rc::Rc};
 
 use context::{Ctx, TransformDtsCtx};
 use function::FunctionReturnType;
-use infer::{infer_type_from_expression, is_need_to_infer_type_from_expression};
+use infer::{
+    infer_type_from_expression, infer_type_from_formal_parameter,
+    is_need_to_infer_type_from_expression,
+};
 use oxc_allocator::{Allocator, Box};
 use oxc_ast::Trivias;
 #[allow(clippy::wildcard_imports)]
 use oxc_ast::{ast::*, Visit};
 use oxc_codegen::{Codegen, CodegenOptions, Context, Gen};
-use oxc_diagnostics::Error;
+use oxc_diagnostics::{Error, OxcDiagnostic};
 use oxc_span::SPAN;
 use oxc_syntax::scope::ScopeFlags;
 use transform::transform_object_expression_to_ts_type;
@@ -191,22 +194,259 @@ impl<'a> TransformerDts<'a> {
             self.modifiers_declare(),
         )
     }
-}
 
-impl<'a> Visit<'a> for TransformerDts<'a> {
-    fn visit_function(&mut self, func: &Function<'a>, _flags: Option<ScopeFlags>) {
-        let func = self.transform_function(func);
-        func.gen(&mut self.codegen, Context::empty());
-    }
-
-    fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
-        if let Some(decl) = self.transform_variable_declaration(decl) {
-            decl.gen(&mut self.codegen, Context::empty());
+    pub fn transform_accessibility(
+        &self,
+        accessibility: Option<TSAccessibility>,
+    ) -> Option<TSAccessibility> {
+        if accessibility.is_none() || accessibility.is_some_and(|a| a == TSAccessibility::Public) {
+            None
         } else {
-            decl.gen(&mut self.codegen, Context::empty());
+            accessibility
         }
     }
 
+    pub fn transform_class_declaration(&self, decl: &Class<'a>) -> Option<Box<'a, Class<'a>>> {
+        if decl.is_declare() {
+            return None;
+        }
+
+        let mut elements = self.ctx.ast.new_vec();
+        let mut has_private_key = false;
+        for element in &decl.body.body {
+            match element {
+                ClassElement::StaticBlock(_) => {}
+                ClassElement::MethodDefinition(definition) => {
+                    if definition.key.is_private_identifier() {
+                        has_private_key = true;
+                    }
+                    let function = &definition.value;
+                    let params = self.transform_formal_parameters(&function.params);
+
+                    if definition.kind.is_constructor() {
+                        for (index, item) in function.params.items.iter().enumerate() {
+                            // transformed params will definitely have type annotation
+                            let type_annotation =
+                                self.ctx.ast.copy(&params.items[index].pattern.type_annotation);
+
+                            if item.accessibility.is_some() {
+                                let Some(ident_name) = item.pattern.get_identifier() else {
+                                    unreachable!()
+                                };
+                                let key = self.ctx.ast.property_key_identifier(
+                                    IdentifierName::new(SPAN, ident_name.clone()),
+                                );
+                                let new_elements = self.ctx.ast.class_property(
+                                    PropertyDefinitionType::PropertyDefinition,
+                                    item.span,
+                                    key,
+                                    None,
+                                    false,
+                                    false,
+                                    false,
+                                    item.r#override,
+                                    item.pattern.optional,
+                                    false,
+                                    item.readonly,
+                                    type_annotation,
+                                    self.transform_accessibility(item.accessibility),
+                                    self.ctx.ast.new_vec(),
+                                );
+                                elements.push(new_elements);
+                            }
+                        }
+                    }
+
+                    let value = self.ctx.ast.function(
+                        FunctionType::TSEmptyBodyFunctionExpression,
+                        function.span,
+                        self.ctx.ast.copy(&function.id),
+                        function.generator,
+                        function.r#async,
+                        self.ctx.ast.copy(&function.this_param),
+                        params,
+                        None,
+                        self.ctx.ast.copy(&function.type_parameters),
+                        // TODO: need to infer function type
+                        self.ctx.ast.copy(&function.return_type),
+                        Modifiers::empty(),
+                    );
+                    let new_element = self.ctx.ast.class_method(
+                        definition.r#type,
+                        definition.span,
+                        self.ctx.ast.copy(&definition.key),
+                        definition.kind,
+                        value,
+                        definition.computed,
+                        definition.r#static,
+                        definition.r#override,
+                        definition.optional,
+                        self.transform_accessibility(definition.accessibility),
+                        self.ctx.ast.new_vec(),
+                    );
+                    elements.push(new_element);
+                }
+                ClassElement::PropertyDefinition(property) => {
+                    if property.key.is_private_identifier() {
+                        has_private_key = true;
+                    }
+                    let type_annotations = property
+                        .type_annotation
+                        .as_ref()
+                        .map(|type_annotation| self.ctx.ast.copy(type_annotation))
+                        .or_else(|| {
+                            let new_type = property
+                                .value
+                                .as_ref()
+                                .and_then(|expr| infer_type_from_expression(&self.ctx, expr))
+                                .unwrap_or_else(|| {
+                                    // report error for has no type annotation
+                                    self.ctx.ast.ts_unknown_keyword(property.span)
+                                });
+                            Some(self.ctx.ast.ts_type_annotation(SPAN, new_type))
+                        });
+
+                    let new_element = self.ctx.ast.class_property(
+                        property.r#type,
+                        property.span,
+                        self.ctx.ast.copy(&property.key),
+                        None,
+                        property.computed,
+                        property.r#static,
+                        property.declare,
+                        property.r#override,
+                        property.optional,
+                        property.definite,
+                        property.readonly,
+                        type_annotations,
+                        self.transform_accessibility(property.accessibility),
+                        self.ctx.ast.new_vec(),
+                    );
+                    elements.push(new_element);
+                }
+                ClassElement::AccessorProperty(property) => {
+                    if property.key.is_private_identifier() {
+                        has_private_key = true;
+                    }
+                    // FIXME: missing many fields
+                    let new_element = self.ctx.ast.accessor_property(
+                        property.r#type,
+                        property.span,
+                        self.ctx.ast.copy(&property.key),
+                        None,
+                        property.computed,
+                        property.r#static,
+                        self.ctx.ast.new_vec(),
+                    );
+                    elements.push(new_element);
+                }
+                ClassElement::TSIndexSignature(_) => elements.push(self.ctx.ast.copy(element)),
+            }
+        }
+
+        if has_private_key {
+            // <https://github.com/microsoft/TypeScript/blob/64d2eeea7b9c7f1a79edf42cb99f302535136a2e/src/compiler/transformers/declarations.ts#L1699-L1709>
+            // When the class has at least one private identifier, create a unique constant identifier to retain the nominal typing behavior
+            // Prevents other classes with the same public members from being used in place of the current class
+            let ident = self
+                .ctx
+                .ast
+                .property_key_private_identifier(PrivateIdentifier::new(SPAN, "private".into()));
+            let r#type = PropertyDefinitionType::PropertyDefinition;
+            let decorators = self.ctx.ast.new_vec();
+            let new_element = self.ctx.ast.class_property(
+                r#type, SPAN, ident, None, false, false, false, false, false, false, false, None,
+                None, decorators,
+            );
+            elements.insert(0, new_element);
+        }
+
+        let body = self.ctx.ast.class_body(decl.body.span, elements);
+
+        Some(self.ctx.ast.class(
+            decl.r#type,
+            decl.span,
+            self.ctx.ast.copy(&decl.id),
+            self.ctx.ast.copy(&decl.super_class),
+            body,
+            self.ctx.ast.copy(&decl.type_parameters),
+            self.ctx.ast.copy(&decl.super_type_parameters),
+            self.ctx.ast.copy(&decl.implements),
+            self.ctx.ast.new_vec(),
+            self.modifiers_declare(),
+        ))
+    }
+
+    pub fn transform_formal_parameter(&self, param: &FormalParameter<'a>) -> FormalParameter<'a> {
+        let is_assignment_pattern = param.pattern.kind.is_assignment_pattern();
+        let mut pattern =
+            if let BindingPatternKind::AssignmentPattern(pattern) = &param.pattern.kind {
+                self.ctx.ast.copy(&pattern.left)
+            } else {
+                self.ctx.ast.copy(&param.pattern)
+            };
+
+        if pattern.type_annotation.is_none() {
+            let type_annotation = pattern
+                .type_annotation
+                .as_ref()
+                .map(|type_annotation| self.ctx.ast.copy(&type_annotation.type_annotation))
+                .or_else(|| {
+                    // report error for has no type annotation
+                    let new_type = infer_type_from_formal_parameter(&self.ctx, param)
+                        .unwrap_or_else(|| self.ctx.ast.ts_unknown_keyword(param.span));
+                    Some(new_type)
+                })
+                .map(|ts_type| self.ctx.ast.ts_type_annotation(SPAN, ts_type));
+
+            pattern = self.ctx.ast.binding_pattern(
+                self.ctx.ast.copy(&pattern.kind),
+                type_annotation,
+                // if it's assignment pattern, it's optional
+                pattern.optional || is_assignment_pattern,
+            );
+        }
+
+        self.ctx.ast.formal_parameter(
+            param.span,
+            pattern,
+            None,
+            param.readonly,
+            false,
+            self.ctx.ast.new_vec(),
+        )
+    }
+
+    pub fn transform_formal_parameters(
+        &self,
+        params: &FormalParameters<'a>,
+    ) -> Box<'a, FormalParameters<'a>> {
+        if params.kind.is_signature() || (params.rest.is_none() && params.items.is_empty()) {
+            return self.ctx.ast.alloc(self.ctx.ast.copy(params));
+        }
+
+        let items = self.ctx.ast.new_vec_from_iter(
+            params.items.iter().map(|item| self.transform_formal_parameter(item)),
+        );
+
+        if let Some(rest) = &params.rest {
+            if rest.argument.type_annotation.is_none() {
+                self.ctx.error(OxcDiagnostic::error(
+                    "Parameter must have an explicit type annotation with --isolatedDeclarations.",
+                ).with_label(rest.span));
+            }
+        }
+
+        self.ctx.ast.formal_parameters(
+            params.span,
+            FormalParameterKind::Signature,
+            items,
+            self.ctx.ast.copy(&params.rest),
+        )
+    }
+}
+
+impl<'a> Visit<'a> for TransformerDts<'a> {
     fn visit_export_named_declaration(&mut self, export_decl: &ExportNamedDeclaration<'a>) {
         if let Some(decl) = &export_decl.declaration {
             let new_decl = match decl {
@@ -218,6 +458,9 @@ impl<'a> Visit<'a> for TransformerDts<'a> {
                 }
                 Declaration::UsingDeclaration(decl) => {
                     Some(Declaration::VariableDeclaration(self.transform_using_declaration(decl)))
+                }
+                Declaration::ClassDeclaration(decl) => {
+                    self.transform_class_declaration(decl).map(Declaration::ClassDeclaration)
                 }
                 _ => None,
             };
@@ -243,8 +486,29 @@ impl<'a> Visit<'a> for TransformerDts<'a> {
         decl.gen(&mut self.codegen, Context::empty());
     }
 
+    fn visit_function(&mut self, func: &Function<'a>, _flags: Option<ScopeFlags>) {
+        let func = self.transform_function(func);
+        func.gen(&mut self.codegen, Context::empty());
+    }
+
+    fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
+        if let Some(decl) = self.transform_variable_declaration(decl) {
+            decl.gen(&mut self.codegen, Context::empty());
+        } else {
+            decl.gen(&mut self.codegen, Context::empty());
+        }
+    }
+
     fn visit_using_declaration(&mut self, decl: &UsingDeclaration<'a>) {
         self.transform_using_declaration(decl).gen(&mut self.codegen, Context::empty());
+    }
+
+    fn visit_class(&mut self, decl: &Class<'a>) {
+        if let Some(decl) = self.transform_class_declaration(decl) {
+            decl.gen(&mut self.codegen, Context::empty());
+        } else {
+            decl.gen(&mut self.codegen, Context::empty());
+        }
     }
 
     fn visit_ts_interface_declaration(&mut self, decl: &TSInterfaceDeclaration<'a>) {
