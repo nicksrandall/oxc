@@ -52,7 +52,21 @@ impl<'a> TransformerDts<'a> {
     ///
     /// Returns `Vec<Error>` if any errors were collected during the transformation.
     pub fn build(mut self, program: &Program<'a>) -> Result<String, std::vec::Vec<Error>> {
-        self.transform_program(program);
+        let has_import_or_export = program.body.iter().any(|stmt| {
+            matches!(
+                stmt,
+                Statement::ImportDeclaration(_)
+                    | Statement::ExportAllDeclaration(_)
+                    | Statement::ExportDefaultDeclaration(_)
+                    | Statement::ExportNamedDeclaration(_)
+            )
+        });
+
+        if has_import_or_export {
+            self.transform_program(program);
+        } else {
+            self.transform_program_without_module_declaration(program);
+        }
 
         let errors = self.ctx.take_errors();
         if errors.is_empty() {
@@ -60,6 +74,18 @@ impl<'a> TransformerDts<'a> {
         } else {
             Err(errors)
         }
+    }
+
+    pub fn transform_program_without_module_declaration(&mut self, program: &Program<'a>) {
+        program.body.iter().for_each(|stmt| {
+            if let Some(decl) = stmt.as_declaration() {
+                if let Some(decl) = self.transform_declaration(decl, false) {
+                    decl.gen(&mut self.codegen, Context::empty());
+                } else {
+                    decl.gen(&mut self.codegen, Context::empty());
+                }
+            }
+        });
     }
 
     pub fn transform_program(&mut self, program: &Program<'a>) {
