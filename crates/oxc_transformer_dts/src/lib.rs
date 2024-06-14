@@ -8,9 +8,10 @@
 mod context;
 mod function;
 mod inferer;
+mod scope;
 mod transform;
 
-use std::{path::Path, rc::Rc};
+use std::{collections::VecDeque, path::Path, rc::Rc};
 
 use context::{Ctx, TransformDtsCtx};
 use oxc_allocator::{Allocator, Box};
@@ -20,11 +21,12 @@ use oxc_ast::{ast::*, Visit};
 use oxc_codegen::{Codegen, CodegenOptions, Context, Gen};
 use oxc_diagnostics::{Error, OxcDiagnostic};
 use oxc_span::{GetSpan, SPAN};
-use oxc_syntax::scope::ScopeFlags;
+use scope::ScopeTree;
 
 pub struct TransformerDts<'a> {
     ctx: Ctx<'a>,
     codegen: Codegen<'a, false>,
+    scope: ScopeTree<'a>,
 }
 
 impl<'a> TransformerDts<'a> {
@@ -43,20 +45,201 @@ impl<'a> TransformerDts<'a> {
 
         let ctx = Rc::new(TransformDtsCtx::new(allocator));
 
-        Self { ctx, codegen }
+        Self { ctx, codegen, scope: ScopeTree::new() }
     }
 
     /// # Errors
     ///
     /// Returns `Vec<Error>` if any errors were collected during the transformation.
     pub fn build(mut self, program: &Program<'a>) -> Result<String, std::vec::Vec<Error>> {
-        self.visit_program(program);
+        self.transform_program(program);
 
         let errors = self.ctx.take_errors();
         if errors.is_empty() {
             Ok(self.codegen.into_source_text())
         } else {
             Err(errors)
+        }
+    }
+
+    pub fn transform_program(&mut self, program: &Program<'a>) {
+        let mut new_stmts = Vec::new();
+        let mut variables_declarations = VecDeque::new();
+        let mut variable_transformed_indexes = VecDeque::new();
+        let mut transformed_indexes = Vec::new();
+        // 1. Collect all declarations, module declarations
+        // 2. Transform export declarations
+        // 3. Collect all bindings / reference from module declarations
+        // 4. Collect transformed indexes
+        program.body.iter().for_each(|stmt| match stmt {
+            match_declaration!(Statement) => {
+                match stmt.to_declaration() {
+                    Declaration::VariableDeclaration(decl) => {
+                        variables_declarations.push_back(
+                            self.ctx.ast.copy(&decl.declarations).into_iter().collect::<Vec<_>>(),
+                        );
+                        variable_transformed_indexes.push_back(Vec::default());
+                    }
+                    Declaration::UsingDeclaration(decl) => {
+                        variables_declarations.push_back(
+                            self.ctx.ast.copy(&decl.declarations).into_iter().collect::<Vec<_>>(),
+                        );
+                        variable_transformed_indexes.push_back(Vec::default());
+                    }
+                    _ => {}
+                }
+                new_stmts.push(self.ctx.ast.copy(stmt));
+            }
+            match_module_declaration!(Statement) => {
+                transformed_indexes.push(new_stmts.len());
+                match stmt.to_module_declaration() {
+                    ModuleDeclaration::ExportDefaultDeclaration(decl) => {
+                        if let Some((var_decl, new_decl)) =
+                            self.transform_export_default_declaration(decl)
+                        {
+                            if let Some(var_decl) = var_decl {
+                                self.scope.visit_variable_declaration(&var_decl);
+                                new_stmts.push(Statement::VariableDeclaration(
+                                    self.ctx.ast.alloc(var_decl),
+                                ));
+                                transformed_indexes.push(new_stmts.len());
+                            }
+
+                            self.scope.visit_export_default_declaration(&new_decl);
+                            new_stmts.push(Statement::ExportDefaultDeclaration(
+                                self.ctx.ast.alloc(new_decl),
+                            ));
+                            return;
+                        }
+
+                        self.scope.visit_export_default_declaration(decl);
+                    }
+                    ModuleDeclaration::ExportNamedDeclaration(decl) => {
+                        if let Some(new_decl) = self.transform_export_named_declaration(decl) {
+                            self.scope.visit_declaration(
+                                new_decl.declaration.as_ref().unwrap_or_else(|| unreachable!()),
+                            );
+
+                            new_stmts.push(Statement::ExportNamedDeclaration(
+                                self.ctx.ast.alloc(new_decl),
+                            ));
+                            return;
+                        }
+
+                        self.scope.visit_export_named_declaration(decl);
+                    }
+                    module_declaration => self.scope.visit_module_declaration(module_declaration),
+                }
+
+                new_stmts.push(self.ctx.ast.copy(stmt));
+            }
+            _ => {}
+        });
+
+        // 5. Transform statements until no more transformation can be done
+        let mut last_reference_len = 0;
+        while last_reference_len != self.scope.references_len() {
+            last_reference_len = self.scope.references_len();
+
+            let mut variables_declarations_iter = variables_declarations.iter_mut();
+            let mut variable_transformed_indexes_iter = variable_transformed_indexes.iter_mut();
+
+            (0..new_stmts.len()).for_each(|i| {
+                if transformed_indexes.contains(&i) {
+                    return;
+                }
+                let Some(decl) = new_stmts[i].as_declaration() else {
+                    return;
+                };
+
+                if let Declaration::VariableDeclaration(_) | Declaration::UsingDeclaration(_) = decl
+                {
+                    let Some(cur_variable_declarations) = variables_declarations_iter.next() else {
+                        unreachable!()
+                    };
+                    let Some(cur_transformed_indexes) = variable_transformed_indexes_iter.next()
+                    else {
+                        unreachable!()
+                    };
+
+                    (0..cur_variable_declarations.len()).for_each(|ii| {
+                        if cur_transformed_indexes.contains(&ii) {
+                            return;
+                        }
+
+                        if let Some(decl) =
+                            self.transform_variable_declarator(&cur_variable_declarations[ii], true)
+                        {
+                            self.scope.visit_variable_declarator(&decl);
+                            cur_transformed_indexes.push(ii);
+                            cur_variable_declarations[ii] = decl;
+                        }
+                    });
+                } else if let Some(decl) = self.transform_declaration(decl, true) {
+                    self.scope.visit_declaration(&decl);
+                    transformed_indexes.push(i);
+                    new_stmts[i] = Statement::from(decl);
+                }
+            });
+        }
+
+        // 6. Transform variable/using declarations, import statements, remove unused imports
+        // 7. Generate code
+        for (index, stmt) in new_stmts.iter().enumerate() {
+            match stmt {
+                _ if transformed_indexes.contains(&index) => {
+                    stmt.gen(&mut self.codegen, Context::empty());
+                }
+                Statement::VariableDeclaration(decl) => {
+                    let indexes =
+                        variable_transformed_indexes.pop_front().unwrap_or_else(|| unreachable!());
+                    let declarations =
+                        variables_declarations.pop_front().unwrap_or_else(|| unreachable!());
+
+                    if !indexes.is_empty() {
+                        self.transform_variable_declaration_with_new_declarations(
+                            decl,
+                            self.ctx.ast.new_vec_from_iter(
+                                declarations
+                                    .into_iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| indexes.contains(i))
+                                    .map(|(_, decl)| decl),
+                            ),
+                        )
+                        .gen(&mut self.codegen, Context::empty());
+                    }
+                }
+                Statement::UsingDeclaration(decl) => {
+                    let indexes =
+                        variable_transformed_indexes.pop_front().unwrap_or_else(|| unreachable!());
+                    let declarations =
+                        variables_declarations.pop_front().unwrap_or_else(|| unreachable!());
+
+                    if !indexes.is_empty() {
+                        self.transform_using_declaration_with_new_declarations(
+                            decl,
+                            self.ctx.ast.new_vec_from_iter(
+                                declarations
+                                    .into_iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| indexes.contains(i))
+                                    .map(|(_, decl)| decl),
+                            ),
+                        )
+                        .gen(&mut self.codegen, Context::empty());
+                    }
+                }
+                Statement::ImportDeclaration(decl) => {
+                    // We must transform this in the end, because we need to know all references
+                    if decl.specifiers.is_none() {
+                        decl.gen(&mut self.codegen, Context::empty());
+                    } else if let Some(decl) = self.transform_import_declaration(decl) {
+                        decl.gen(&mut self.codegen, Context::empty());
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -68,13 +251,13 @@ impl<'a> TransformerDts<'a> {
         )
     }
 
-    pub fn transform_function(&mut self, func: &Function<'a>) -> Box<'a, Function<'a>> {
+    pub fn transform_function(&mut self, func: &Function<'a>) -> Option<Box<'a, Function<'a>>> {
         if func.modifiers.is_contains_declare() {
-            self.ctx.ast.alloc(self.ctx.ast.copy(func))
+            None
         } else {
             let return_type = self.infer_function_return_type(func);
             let params = self.transform_formal_parameters(&func.params);
-            self.ctx.ast.function(
+            Some(self.ctx.ast.function(
                 func.r#type,
                 func.span,
                 self.ctx.ast.copy(&func.id),
@@ -86,35 +269,59 @@ impl<'a> TransformerDts<'a> {
                 self.ctx.ast.copy(&func.type_parameters),
                 return_type,
                 self.modifiers_declare(),
-            )
+            ))
         }
     }
 
     pub fn transform_variable_declaration(
         &self,
         decl: &VariableDeclaration<'a>,
+        check_binding: bool,
     ) -> Option<Box<'a, VariableDeclaration<'a>>> {
         if decl.modifiers.is_contains_declare() {
             None
         } else {
-            let declarations = self.ctx.ast.new_vec_from_iter(
-                decl.declarations
-                    .iter()
-                    .map(|declarator| self.transform_variable_declarator(declarator)),
-            );
-            Some(self.ctx.ast.variable_declaration(
-                decl.span,
-                decl.kind,
-                declarations,
-                self.modifiers_declare(),
-            ))
+            let declarations =
+                self.ctx.ast.new_vec_from_iter(decl.declarations.iter().filter_map(|declarator| {
+                    self.transform_variable_declarator(declarator, check_binding)
+                }));
+            Some(self.transform_variable_declaration_with_new_declarations(decl, declarations))
         }
+    }
+
+    pub fn transform_variable_declaration_with_new_declarations(
+        &self,
+        decl: &VariableDeclaration<'a>,
+        declarations: oxc_allocator::Vec<'a, VariableDeclarator<'a>>,
+    ) -> Box<'a, VariableDeclaration<'a>> {
+        self.ctx.ast.variable_declaration(
+            decl.span,
+            decl.kind,
+            self.ctx.ast.new_vec_from_iter(declarations),
+            self.modifiers_declare(),
+        )
     }
 
     pub fn transform_variable_declarator(
         &self,
         decl: &VariableDeclarator<'a>,
-    ) -> VariableDeclarator<'a> {
+        check_binding: bool,
+    ) -> Option<VariableDeclarator<'a>> {
+        if decl.id.kind.is_destructuring_pattern() {
+            self.ctx.error(OxcDiagnostic::error(
+                "Binding elements can't be exported directly with --isolatedDeclarations.",
+            ));
+            return None;
+        }
+
+        if check_binding {
+            if let Some(name) = decl.id.get_identifier() {
+                if !self.scope.has_reference(name) {
+                    return None;
+                }
+            }
+        }
+
         let mut binding_type = None;
         let mut init = None;
         if decl.id.type_annotation.is_none() {
@@ -126,8 +333,8 @@ impl<'a> TransformerDts<'a> {
                     // otherwise, we need to infer type from expression
                     binding_type = self.infer_type_from_expression(init_expr);
                 }
-            } 
-            if binding_type.is_none() {
+            }
+            if init.is_none() && binding_type.is_none() {
                 binding_type = Some(self.ctx.ast.ts_unknown_keyword(SPAN));
                 self.ctx.error(
                     OxcDiagnostic::error("Variable must have an explicit type annotation with --isolatedDeclarations.")
@@ -146,18 +353,26 @@ impl<'a> TransformerDts<'a> {
             },
         );
 
-        self.ctx.ast.variable_declarator(decl.span, decl.kind, id, init, decl.definite)
+        Some(self.ctx.ast.variable_declarator(decl.span, decl.kind, id, init, decl.definite))
     }
 
     pub fn transform_using_declaration(
         &self,
         decl: &UsingDeclaration<'a>,
+        check_binding: bool,
     ) -> Box<'a, VariableDeclaration<'a>> {
-        let declarations = self.ctx.ast.new_vec_from_iter(
-            decl.declarations
-                .iter()
-                .map(|declarator| self.transform_variable_declarator(declarator)),
-        );
+        let declarations =
+            self.ctx.ast.new_vec_from_iter(decl.declarations.iter().filter_map(|declarator| {
+                self.transform_variable_declarator(declarator, check_binding)
+            }));
+        self.transform_using_declaration_with_new_declarations(decl, declarations)
+    }
+
+    pub fn transform_using_declaration_with_new_declarations(
+        &self,
+        decl: &UsingDeclaration<'a>,
+        declarations: oxc_allocator::Vec<'a, VariableDeclarator<'a>>,
+    ) -> Box<'a, VariableDeclaration<'a>> {
         self.ctx.ast.variable_declaration(
             decl.span,
             VariableDeclarationKind::Const,
@@ -196,7 +411,7 @@ impl<'a> TransformerDts<'a> {
         }
     }
 
-    pub fn transform_class_declaration(&self, decl: &Class<'a>) -> Option<Box<'a, Class<'a>>> {
+    pub fn transform_class(&self, decl: &Class<'a>) -> Option<Box<'a, Class<'a>>> {
         if decl.is_declare() {
             return None;
         }
@@ -406,7 +621,7 @@ impl<'a> TransformerDts<'a> {
         if is_assignment_pattern || pattern.type_annotation.is_none() {
             let is_next_param_optional =
                 next_param.map_or(true, |next_param| next_param.pattern.optional);
-    
+
             let type_annotation = pattern
                 .type_annotation
                 .as_ref()
@@ -429,7 +644,7 @@ impl<'a> TransformerDts<'a> {
                             );
                         } else if !ts_type.is_maybe_undefined() {
                             // union with undefined
-                            return self.ctx.ast.ts_type_annotation(SPAN, 
+                            return self.ctx.ast.ts_type_annotation(SPAN,
                                 self.ctx.ast.ts_union_type(SPAN, self.ctx.ast.new_vec_from_iter([ts_type, self.ctx.ast.ts_undefined_keyword(SPAN)]))
                             );
                         }
@@ -484,74 +699,192 @@ impl<'a> TransformerDts<'a> {
             self.ctx.ast.copy(&params.rest),
         )
     }
-}
 
-impl<'a> Visit<'a> for TransformerDts<'a> {
-    fn visit_export_named_declaration(&mut self, export_decl: &ExportNamedDeclaration<'a>) {
-        if let Some(decl) = &export_decl.declaration {
-            let new_decl = match decl {
-                Declaration::FunctionDeclaration(func) => {
-                    Some(Declaration::FunctionDeclaration(self.transform_function(func)))
+    pub fn transform_declaration(
+        &mut self,
+        decl: &Declaration<'a>,
+        check_binding: bool,
+    ) -> Option<Declaration<'a>> {
+        match decl {
+            Declaration::FunctionDeclaration(func) => {
+                if !check_binding
+                    || func.id.as_ref().is_some_and(|id| self.scope.has_reference(&id.name))
+                {
+                    self.transform_function(func).map(Declaration::FunctionDeclaration)
+                } else {
+                    None
                 }
-                Declaration::VariableDeclaration(decl) => {
-                    self.transform_variable_declaration(decl).map(Declaration::VariableDeclaration)
-                }
-                Declaration::UsingDeclaration(decl) => {
-                    Some(Declaration::VariableDeclaration(self.transform_using_declaration(decl)))
-                }
-                Declaration::ClassDeclaration(decl) => {
-                    self.transform_class_declaration(decl).map(Declaration::ClassDeclaration)
-                }
-                _ => None,
-            };
-            if new_decl.is_some() {
-                ExportNamedDeclaration {
-                    span: export_decl.span,
-                    declaration: new_decl,
-                    specifiers: self.ctx.ast.copy(&export_decl.specifiers),
-                    source: self.ctx.ast.copy(&export_decl.source),
-                    export_kind: export_decl.export_kind,
-                    with_clause: self.ctx.ast.copy(&export_decl.with_clause),
-                }
-                .gen(&mut self.codegen, Context::empty());
-            } else {
-                export_decl.gen(&mut self.codegen, Context::empty());
             }
-        } else {
-            export_decl.gen(&mut self.codegen, Context::empty());
+            Declaration::VariableDeclaration(decl) => self
+                .transform_variable_declaration(decl, check_binding)
+                .map(Declaration::VariableDeclaration),
+            Declaration::UsingDeclaration(decl) => Some(Declaration::VariableDeclaration(
+                self.transform_using_declaration(decl, check_binding),
+            )),
+            Declaration::ClassDeclaration(decl) => {
+                if !check_binding
+                    || decl.id.as_ref().is_some_and(|id| self.scope.has_reference(&id.name))
+                {
+                    self.transform_class(decl).map(Declaration::ClassDeclaration)
+                } else {
+                    None
+                }
+            }
+            Declaration::TSTypeAliasDeclaration(decl) => {
+                if !check_binding || self.scope.has_reference(&decl.id.name) {
+                    Some(Declaration::TSTypeAliasDeclaration(self.ctx.ast.copy(decl)))
+                } else {
+                    None
+                }
+            }
+            Declaration::TSInterfaceDeclaration(decl) => {
+                if !check_binding || self.scope.has_reference(&decl.id.name) {
+                    Some(Declaration::TSInterfaceDeclaration(self.ctx.ast.copy(decl)))
+                } else {
+                    None
+                }
+            }
+            Declaration::TSEnumDeclaration(decl) => {
+                if !check_binding || self.scope.has_reference(&decl.id.name) {
+                    Some(Declaration::TSEnumDeclaration(self.ctx.ast.copy(decl)))
+                } else {
+                    None
+                }
+            }
+            Declaration::TSModuleDeclaration(decl) => {
+                if !check_binding
+                    || matches!(
+                        &decl.id,
+                        TSModuleDeclarationName::Identifier(ident)
+                            if self.scope.has_reference(&ident.name)
+                    )
+                {
+                    Some(Declaration::TSModuleDeclaration(self.ctx.ast.copy(decl)))
+                } else {
+                    None
+                }
+            }
+            Declaration::TSImportEqualsDeclaration(decl) => {
+                if !check_binding || self.scope.has_reference(&decl.id.name) {
+                    Some(Declaration::TSImportEqualsDeclaration(self.ctx.ast.copy(decl)))
+                } else {
+                    None
+                }
+            }
         }
     }
 
-    fn visit_export_default_declaration(&mut self, decl: &ExportDefaultDeclaration<'a>) {
-        decl.gen(&mut self.codegen, Context::empty());
+    pub fn transform_export_named_declaration(
+        &mut self,
+        decl: &ExportNamedDeclaration<'a>,
+    ) -> Option<ExportNamedDeclaration<'a>> {
+        let decl = self.transform_declaration(decl.declaration.as_ref()?, false)?;
+
+        Some(ExportNamedDeclaration {
+            span: decl.span(),
+            declaration: Some(decl),
+            specifiers: self.ctx.ast.new_vec(),
+            source: None,
+            export_kind: ImportOrExportKind::Value,
+            with_clause: None,
+        })
     }
 
-    fn visit_function(&mut self, func: &Function<'a>, _flags: Option<ScopeFlags>) {
-        let func = self.transform_function(func);
-        func.gen(&mut self.codegen, Context::empty());
+    pub fn transform_export_default_declaration(
+        &mut self,
+        decl: &ExportDefaultDeclaration<'a>,
+    ) -> Option<(Option<VariableDeclaration<'a>>, ExportDefaultDeclaration<'a>)> {
+        let declaration = match &decl.declaration {
+            ExportDefaultDeclarationKind::FunctionDeclaration(decl) => self
+                .transform_function(decl)
+                .map(|d| (None, ExportDefaultDeclarationKind::FunctionDeclaration(d))),
+            ExportDefaultDeclarationKind::ClassDeclaration(decl) => self
+                .transform_class(decl)
+                .map(|d| (None, ExportDefaultDeclarationKind::ClassDeclaration(d))),
+            ExportDefaultDeclarationKind::TSInterfaceDeclaration(decl) => {
+                // TODO: need to transform TSInterfaceDeclaration
+                Some((
+                    None,
+                    ExportDefaultDeclarationKind::TSInterfaceDeclaration(self.ctx.ast.copy(decl)),
+                ))
+            }
+            ExportDefaultDeclarationKind::TSEnumDeclaration(_) => None,
+            expr @ match_expression!(ExportDefaultDeclarationKind) => {
+                let expr = expr.to_expression();
+                if matches!(expr, Expression::Identifier(_)) {
+                    None
+                } else {
+                    // declare const _default: Type
+                    let kind = VariableDeclarationKind::Const;
+                    let name = self.ctx.ast.new_atom("_default");
+                    let id = self
+                        .ctx
+                        .ast
+                        .binding_pattern_identifier(BindingIdentifier::new(SPAN, name.clone()));
+                    let type_annotation = self
+                        .infer_type_from_expression(expr)
+                        .map(|ts_type| self.ctx.ast.ts_type_annotation(SPAN, ts_type));
+
+                    let id = BindingPattern { kind: id, type_annotation, optional: false };
+                    let declarations = self.ctx.ast.new_vec_single(
+                        self.ctx.ast.variable_declarator(SPAN, kind, id, None, true),
+                    );
+
+                    Some((
+                        Some(VariableDeclaration {
+                            span: SPAN,
+                            kind,
+                            declarations,
+                            modifiers: self.modifiers_declare(),
+                        }),
+                        ExportDefaultDeclarationKind::from(
+                            self.ctx.ast.identifier_reference_expression(
+                                self.ctx.ast.identifier_reference(SPAN, &name),
+                            ),
+                        ),
+                    ))
+                }
+            }
+        };
+
+        declaration.map(|(var_decl, declaration)| {
+            let exported = ModuleExportName::Identifier(IdentifierName::new(
+                SPAN,
+                self.ctx.ast.new_atom("default"),
+            ));
+            (var_decl, ExportDefaultDeclaration { span: decl.span, declaration, exported })
+        })
     }
 
-    fn visit_variable_declaration(&mut self, decl: &VariableDeclaration<'a>) {
-        if let Some(decl) = self.transform_variable_declaration(decl) {
-            decl.gen(&mut self.codegen, Context::empty());
+    pub fn transform_import_declaration(
+        &self,
+        decl: &ImportDeclaration<'a>,
+    ) -> Option<ImportDeclaration<'a>> {
+        let specifiers = decl.specifiers.as_ref()?;
+
+        let mut specifiers = self.ctx.ast.copy(specifiers);
+        specifiers.retain(|specifier| match specifier {
+            ImportDeclarationSpecifier::ImportSpecifier(specifier) => {
+                self.scope.has_reference(&specifier.local.name)
+            }
+            ImportDeclarationSpecifier::ImportDefaultSpecifier(specifier) => {
+                self.scope.has_reference(&specifier.local.name)
+            }
+            ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => {
+                self.scope.has_reference(&self.ctx.ast.new_atom(&specifier.name()))
+            }
+        });
+        if specifiers.is_empty() {
+            // We don't need to print this import statement
+            None
         } else {
-            decl.gen(&mut self.codegen, Context::empty());
+            Some(ImportDeclaration {
+                span: decl.span,
+                specifiers: Some(specifiers),
+                source: self.ctx.ast.copy(&decl.source),
+                with_clause: self.ctx.ast.copy(&decl.with_clause),
+                import_kind: decl.import_kind,
+            })
         }
-    }
-
-    fn visit_using_declaration(&mut self, decl: &UsingDeclaration<'a>) {
-        self.transform_using_declaration(decl).gen(&mut self.codegen, Context::empty());
-    }
-
-    fn visit_class(&mut self, decl: &Class<'a>) {
-        if let Some(decl) = self.transform_class_declaration(decl) {
-            decl.gen(&mut self.codegen, Context::empty());
-        } else {
-            decl.gen(&mut self.codegen, Context::empty());
-        }
-    }
-
-    fn visit_ts_interface_declaration(&mut self, decl: &TSInterfaceDeclaration<'a>) {
-        decl.gen(&mut self.codegen, Context::empty());
     }
 }

@@ -39,6 +39,17 @@ impl<'a> TransformerDts<'a> {
                     Some(self.ctx.ast.copy(&expr.type_annotation))
                 }
             }
+            Expression::ClassExpression(expr) => {
+                self.ctx.error(
+                    OxcDiagnostic::error(
+                        "
+                        Inference from class expressions is not supported with --isolatedDeclarations.
+                    ",
+                    )
+                    .with_label(expr.span),
+                );
+                Some(self.ctx.ast.ts_unknown_keyword(SPAN))
+            }
             Expression::TSNonNullExpression(expr) => {
                 self.infer_type_from_expression(&expr.expression)
             }
@@ -86,14 +97,24 @@ impl<'a> TransformerDts<'a> {
             return self.ctx.ast.copy(&function.return_type);
         }
 
-        FunctionReturnType::infer(
+        let return_type = FunctionReturnType::infer(
             self,
             function
                 .body
                 .as_ref()
                 .unwrap_or_else(|| unreachable!("declare function can not have body")),
         )
-        .map(|type_annotation| self.ctx.ast.ts_type_annotation(SPAN, type_annotation))
+        .map(|type_annotation| self.ctx.ast.ts_type_annotation(SPAN, type_annotation));
+
+        if return_type.is_none() {
+            self.ctx.error(OxcDiagnostic::error(
+                "Function must have an explicit return type annotation with --isolatedDeclarations.",
+            ).with_label(function.span));
+
+            Some(self.ctx.ast.ts_type_annotation(SPAN, self.ctx.ast.ts_unknown_keyword(SPAN)))
+        } else {
+            return_type
+        }
     }
 
     pub fn infer_arrow_function_return_type(

@@ -27,9 +27,10 @@ oxc_allocator   = { workspace = true }
 oxc_diagnostics = { workspace = true }
 oxc_syntax      = { workspace = true, features = ["to_js_string"] }
 
+rustc-hash = { workspace = true }
+
 [dev-dependencies]
-oxc_parser  = { workspace = true }
-oxc_codegen = { workspace = true }
+oxc_parser = { workspace = true }
 
 [features]
 default = []
