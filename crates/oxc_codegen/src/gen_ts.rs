@@ -561,6 +561,22 @@ impl<'a, const MINIFY: bool> Gen<MINIFY> for TSModuleDeclaration<'a> {
     }
 }
 
+impl<'a, const MINIFY: bool> Gen<MINIFY> for TSTypeAliasDeclaration<'a> {
+    fn gen(&self, p: &mut Codegen<{ MINIFY }>, ctx: Context) {
+        if !p.options.enable_typescript {
+            return;
+        }
+        p.print_str(b"type ");
+        self.id.gen(p, ctx);
+        if let Some(type_parameters) = &self.type_parameters {
+            type_parameters.gen(p, ctx);
+        }
+        p.print_str(b" = ");
+        self.type_annotation.gen(p, ctx);
+        p.print_semicolon_after_statement();
+    }
+}
+
 impl<'a, const MINIFY: bool> Gen<MINIFY> for TSInterfaceDeclaration<'a> {
     fn gen(&self, p: &mut Codegen<{ MINIFY }>, ctx: Context) {
         if !p.options.enable_typescript {
