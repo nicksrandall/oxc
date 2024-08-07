@@ -76,7 +76,7 @@ fn derive_enum(def: &EnumDef) -> TokenStream {
             },
         )
     };
-    impl_clone_in(&ty_ident, def.has_lifetime, alloc, body)
+    impl_clone_in(&ty_ident, def.has_lifetime, &alloc, &body)
 }
 
 fn derive_struct(def: &StructDef) -> TokenStream {
@@ -93,14 +93,14 @@ fn derive_struct(def: &StructDef) -> TokenStream {
         };
         (alloc_ident, quote!( #ty_ident #body ))
     };
-    impl_clone_in(&ty_ident, def.has_lifetime, alloc, body)
+    impl_clone_in(&ty_ident, def.has_lifetime, &alloc, &body)
 }
 
 fn impl_clone_in(
     ty_ident: &Ident,
     has_lifetime: bool,
-    alloc: Ident,
-    body: TokenStream,
+    alloc: &Ident,
+    body: &TokenStream,
 ) -> TokenStream {
     if has_lifetime {
         quote! {
