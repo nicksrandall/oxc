@@ -61,6 +61,13 @@ impl<'s, 'a> Symbol<'s, 'a> {
         self.nodes().get_node(self.declaration_id())
     }
 
+    /// Returns `true` if this symbol has any references of any kind. Does not
+    /// check if a references is "used" under the criteria of this rule.
+    #[inline]
+    pub fn has_references(&self) -> bool {
+        !self.symbols().get_resolved_reference_ids(self.id).is_empty()
+    }
+
     #[inline]
     pub fn references(&self) -> impl DoubleEndedIterator<Item = &Reference> + '_ {
         self.symbols().get_resolved_references(self.id)
